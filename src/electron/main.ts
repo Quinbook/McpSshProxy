@@ -85,6 +85,9 @@ const runningConns = new Map<string, SshClient>();
 const requestToClient = new Map<string, WebSocket>();
 const mcpClients = new Set<WebSocket>();
 
+// Pending SFTP transfer requests awaiting approval (id -> server + operation).
+const transferRequests = new Map<string, { server: ServerConfig; op: any }>();
+
 // --- safeStorage helpers ---
 function encryptSecret(plain: string): string {
   if (!plain) return '';
@@ -282,6 +285,66 @@ function cancelCommand(id: string): { success: boolean; error?: string } {
   }
 }
 
+// --- SFTP transfers ---
+function isProbablyText(buf: Buffer): boolean {
+  if (buf.includes(0)) return false;
+  return Buffer.from(buf.toString('utf8'), 'utf8').equals(buf);
+}
+
+function transferDescription(msg: any): string {
+  if (msg.type === 'upload') {
+    const src = msg.localPath ? `von ${msg.localPath}` : `${(msg.content || '').length} bytes ${msg.encoding}`;
+    return `⬆ UPLOAD → ${msg.host}:${msg.remotePath} (${src})`;
+  }
+  return `⬇ DOWNLOAD ← ${msg.host}:${msg.remotePath}${msg.localPath ? ` → ${msg.localPath}` : ''}`;
+}
+
+function transferSummary(data: any): string {
+  if (data.op === 'upload') return `Uploaded ${data.bytes} bytes to ${data.remotePath}`;
+  if (data.localPath) return `Downloaded ${data.bytes} bytes to ${data.localPath}`;
+  return `Downloaded ${data.bytes} bytes from ${data.remotePath} (${data.encoding}${data.truncated ? ', truncated' : ''})`;
+}
+
+async function executeTransfer(server: ServerConfig, op: any): Promise<any> {
+  const cfg = await buildConnectConfig(server);
+  const conn = new SshClient();
+  await new Promise<void>((resolve, reject) => {
+    conn.on('ready', () => resolve());
+    conn.on('error', (e) => reject(e));
+    conn.connect(cfg);
+  });
+  const sftp: any = await new Promise((resolve, reject) => conn.sftp((e, s) => e ? reject(e) : resolve(s)));
+  try {
+    if (op.type === 'upload') {
+      if (op.localPath) {
+        await new Promise<void>((res, rej) => sftp.fastPut(op.localPath, op.remotePath, (e: any) => e ? rej(e) : res()));
+        const st = fs.statSync(op.localPath);
+        return { op: 'upload', remotePath: op.remotePath, bytes: st.size };
+      }
+      const buf = Buffer.from(op.content || '', op.encoding === 'base64' ? 'base64' : 'utf8');
+      await new Promise<void>((res, rej) => sftp.writeFile(op.remotePath, buf, (e: any) => e ? rej(e) : res()));
+      return { op: 'upload', remotePath: op.remotePath, bytes: buf.length };
+    }
+    // download
+    if (op.localPath) {
+      await new Promise<void>((res, rej) => sftp.fastGet(op.remotePath, op.localPath, (e: any) => e ? rej(e) : res()));
+      return { op: 'download', remotePath: op.remotePath, localPath: op.localPath, bytes: fs.statSync(op.localPath).size };
+    }
+    const buf: Buffer = await new Promise((res, rej) => sftp.readFile(op.remotePath, (e: any, d: Buffer) => e ? rej(e) : res(d)));
+    const max = op.maxBytes || 262144;
+    const truncated = buf.length > max;
+    const slice = truncated ? buf.subarray(0, max) : buf;
+    const text = isProbablyText(slice);
+    return {
+      op: 'download', remotePath: op.remotePath, bytes: buf.length, truncated,
+      encoding: text ? 'utf8' : 'base64',
+      content: text ? slice.toString('utf8') : slice.toString('base64'),
+    };
+  } finally {
+    try { conn.end(); } catch { /* ignore */ }
+  }
+}
+
 // --- WebSocket Server (accepts connections from MCP processes) ---
 function startWebSocketServer() {
   const httpServer = http.createServer((req, res) => {
@@ -357,6 +420,44 @@ function startWebSocketServer() {
             title: 'MCP SSH Proxy',
             body: msg.description || `Neuer Befehl für ${msg.host} wartet auf Freigabe`,
           });
+          return;
+        }
+
+        if (msg.type === 'upload' || msg.type === 'download') {
+          requestToClient.set(msg.id, ws);
+          const server = findServer(msg.host);
+          if (!server) { ws.send(JSON.stringify({ type: 'error', id: msg.id, error: `No server named "${msg.host}" is configured.` })); return; }
+
+          const op = msg.type === 'upload'
+            ? { type: 'upload', remotePath: msg.remotePath, content: msg.content, encoding: msg.encoding, localPath: msg.localPath }
+            : { type: 'download', remotePath: msg.remotePath, localPath: msg.localPath, maxBytes: msg.maxBytes };
+          transferRequests.set(msg.id, { server, op });
+          const desc = transferDescription(msg);
+
+          if (!needsConfirm(server)) {
+            mainWindow?.webContents.send('command-autostart', { id: msg.id, host: msg.host, command: desc });
+            executeTransfer(server, op)
+              .then((data) => {
+                transferRequests.delete(msg.id);
+                const client = requestToClient.get(msg.id);
+                if (client && client.readyState === WebSocket.OPEN) ws_sendResult(client, msg.id, data);
+                mainWindow?.webContents.send('command-autodone', { id: msg.id, host: msg.host, command: desc, result: { code: 0, stdout: transferSummary(data) } });
+              })
+              .catch((err: any) => {
+                transferRequests.delete(msg.id);
+                const client = requestToClient.get(msg.id);
+                if (client && client.readyState === WebSocket.OPEN) ws_sendError(client, msg.id, err.message);
+                mainWindow?.webContents.send('command-autoerror', { id: msg.id, host: msg.host, command: desc, error: err.message });
+              });
+            return;
+          }
+
+          mainWindow?.webContents.send('new-command', { id: msg.id, host: msg.host, command: desc, description: msg.description, kind: 'transfer' });
+          mainWindow?.flashFrame(true);
+          if (mainWindow?.isMinimized()) mainWindow.restore();
+          mainWindow?.focus();
+          mainWindow?.webContents.send('show-notification', { title: 'MCP SSH Proxy', body: `Datei-Transfer für ${msg.host} wartet auf Freigabe` });
+          return;
         }
       } catch (e) {
         console.error('Failed to parse MCP message:', e);
@@ -407,6 +508,18 @@ ipcMain.handle('approve-command', async (_event, { id, host, command }) => {
 
 ipcMain.handle('cancel-command', async (_event, { id }) => {
   return cancelCommand(id);
+});
+
+ipcMain.handle('approve-transfer', async (_event, { id }) => {
+  const req = transferRequests.get(id);
+  if (!req) return { success: false, error: 'Transfer request not found (already handled?).' };
+  try {
+    const data = await executeTransfer(req.server, req.op);
+    transferRequests.delete(id);
+    return { success: true, data };
+  } catch (e: any) {
+    return { success: false, error: e.message };
+  }
 });
 
 ipcMain.on('send-result', (_event, { id, data }) => {

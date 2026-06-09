@@ -212,6 +212,55 @@ server.tool(
   }
 );
 
+server.tool(
+  'ssh_upload',
+  'Uploads a file to a configured SSH server via SFTP. Provide inline `content` (text, or base64 with content_encoding=base64) OR a `local_path` on the machine running the proxy. The user approves the transfer in the desktop app before it runs. Use ssh_list_hosts to discover host names.',
+  {
+    host: z.string().describe('Name of the configured server'),
+    remote_path: z.string().describe('Absolute destination path on the server'),
+    content: z.string().optional().describe('Inline file content to write'),
+    content_encoding: z.enum(['utf8', 'base64']).optional().describe('Encoding of `content` (default utf8; use base64 for binary)'),
+    local_path: z.string().optional().describe('Path to a local file on the proxy machine to upload instead of inline content'),
+    description: z.string().optional().describe('Brief explanation of why this upload is needed'),
+  },
+  async ({ host, remote_path, content, content_encoding, local_path, description }) => {
+    const id = `u_${++requestCounter}_${Date.now()}_${process.pid}`;
+    try {
+      const data = await sendAndWait({ type: 'upload', id, host, remotePath: remote_path, content, encoding: content_encoding || 'utf8', localPath: local_path, description });
+      if (data?.rejected) return { content: [{ type: 'text', text: `Upload was rejected by user: ${data.reason}` }] };
+      return { content: [{ type: 'text', text: `Uploaded ${data?.bytes ?? '?'} bytes to ${host}:${data?.remotePath ?? remote_path}` }] };
+    } catch (e: any) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }] };
+    }
+  }
+);
+
+server.tool(
+  'ssh_download',
+  'Downloads a file from a configured SSH server via SFTP. Without `local_path` the content is returned inline (text when it is valid UTF-8, otherwise base64, capped at max_bytes). With `local_path` the file is saved on the proxy machine. The user approves the transfer in the desktop app before it runs.',
+  {
+    host: z.string().describe('Name of the configured server'),
+    remote_path: z.string().describe('Absolute path of the file on the server'),
+    local_path: z.string().optional().describe('If set, save the file here on the proxy machine instead of returning the content inline'),
+    max_bytes: z.number().optional().describe('Max bytes to return inline (default 262144)'),
+    description: z.string().optional().describe('Brief explanation of why this download is needed'),
+  },
+  async ({ host, remote_path, local_path, max_bytes, description }) => {
+    const id = `d_${++requestCounter}_${Date.now()}_${process.pid}`;
+    try {
+      const data = await sendAndWait({ type: 'download', id, host, remotePath: remote_path, localPath: local_path, maxBytes: max_bytes, description });
+      if (data?.rejected) return { content: [{ type: 'text', text: `Download was rejected by user: ${data.reason}` }] };
+      if (data?.localPath) {
+        return { content: [{ type: 'text', text: `Downloaded ${data.bytes} bytes from ${host}:${data.remotePath} to ${data.localPath}` }] };
+      }
+      const head = `--- ${host}:${data?.remotePath ?? remote_path} (${data?.bytes ?? '?'} bytes${data?.truncated ? ', truncated' : ''}, ${data?.encoding}) ---`;
+      return { content: [{ type: 'text', text: `${head}\n${data?.content ?? ''}` }] };
+    } catch (e: any) {
+      return { content: [{ type: 'text', text: `Error: ${e.message}` }] };
+    }
+  }
+);
+
 // --- Start ---
 async function main() {
   const transport = new StdioServerTransport();

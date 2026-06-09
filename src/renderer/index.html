@@ -410,8 +410,9 @@
       document.getElementById('detail-headrow').style.display = 'none';
       const desc = document.getElementById('detail-desc');
       if (item.description) { desc.textContent = item.description; desc.classList.remove('hidden'); } else desc.classList.add('hidden');
-      const ta = document.getElementById('detail-cmd'); ta.value = item.command; ta.readOnly = false;
-      document.getElementById('detail-editable-hint').textContent = '(editierbar)';
+      const isTransfer = item.kind === 'transfer';
+      const ta = document.getElementById('detail-cmd'); ta.value = item.command; ta.readOnly = isTransfer;
+      document.getElementById('detail-editable-hint').textContent = isTransfer ? '(Datei-Transfer — nur Freigabe)' : '(editierbar)';
       const out = document.getElementById('detail-output'); out.textContent = ''; out.style.display = 'none';   // output shows in the terminal below
       setButtons({ run: true, reject: true, send: false, cancel: false });
       document.getElementById('detail-status').textContent = '';
@@ -435,6 +436,26 @@
       document.getElementById('detail-status').textContent = 'Running…';
       setButtons({ run: false, reject: false, send: false, cancel: true });
       try {
+        if (item.kind === 'transfer') {
+          const res = await window.api.approveTransfer(item.id);
+          if (res.success) {
+            const d = res.data;
+            const summary = d.op === 'upload'
+              ? `${d.bytes} bytes → ${d.remotePath}`
+              : (d.localPath ? `${d.bytes} bytes → ${d.localPath}` : `${d.bytes} bytes (${d.encoding}${d.truncated ? ', truncated' : ''})`);
+            echoClaudeCommand(item.host, item.command, { code: 0, stdout: summary });
+            window.api.sendResult(item.id, d);
+            persistHistory({ host: item.host, command: item.command, status: 'sent', exitCode: 0, stdout: summary });
+            document.getElementById('detail-status').textContent = '✓ Transfer ok — an Claude gesendet';
+          } else {
+            echoClaudeCommand(item.host, item.command, { stderr: res.error });
+            window.api.sendError(item.id, res.error);
+            persistHistory({ host: item.host, command: item.command, status: 'error', stderr: res.error });
+            document.getElementById('detail-status').textContent = '✗ Fehler: ' + res.error;
+          }
+          finishPending(item.id);
+          return;
+        }
         const res = await window.api.approveCommand(item.id, item.host, command);
         if (res.success) {
           lastResult = res.data;

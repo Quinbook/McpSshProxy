@@ -12,6 +12,7 @@ Servers are configured **only in the app's UI** — nothing is hardcoded, and cr
 - ⚙️ **Per-command confirm modes** — a global *confirm-each* ⟷ *auto-run* switch, overridable per server (`always confirm` / `auto`).
 - 🖥️ **Built-in interactive terminals** — full PuTTY-style xterm.js shells, **multiple servers at once in tabs**; type freely, see colors/vim/live output. Agent commands are echoed into the matching server's terminal as a labelled blue bar.
 - 🗂️ **Multi-server aware** — pending requests are scoped to the selected server with a `!` badge on the others; idle target servers are auto-connected on demand.
+- 📤 **SFTP file transfer** — `ssh_upload` / `ssh_download` move files to/from a server (inline content or a local path), each approved in the app.
 - 🔑 **Any key format** — OpenSSH, PEM/PKCS#8, **and PuTTY `.ppk` (v2 & v3)** are detected and converted automatically; key, password, or ssh-agent auth.
 - 📥 **PuTTY session import** — pull saved sessions (host/port/user/key) straight from the Windows registry.
 - 🕑 **Persistent per-server history** — every executed command is stored across sessions.
@@ -40,6 +41,8 @@ Nothing binds to anything but `127.0.0.1`.
 |------|-----------|-------------|
 | `ssh_list_hosts` | no | Returns the configured host names (+ address/user/auth). No secrets. Call this first. |
 | `ssh_exec` | **yes** | Runs a command on a host (by name). You approve/edit/reject in the app. Returns stdout, stderr, exit code. |
+| `ssh_upload` | **yes** | Uploads a file via SFTP — inline `content` (text/base64) or a `local_path` on the proxy machine → `remote_path`. |
+| `ssh_download` | **yes** | Downloads a file via SFTP — returned inline (UTF-8 or base64, capped) or saved to a `local_path`. |
 
 ## Install & build
 

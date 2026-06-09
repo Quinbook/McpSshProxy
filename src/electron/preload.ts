@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('api', {
   },
   approveCommand: (id: string, host: string, command: string) =>
     ipcRenderer.invoke('approve-command', { id, host, command }),
+  approveTransfer: (id: string) => ipcRenderer.invoke('approve-transfer', { id }),
   cancelCommand: (id: string) => ipcRenderer.invoke('cancel-command', { id }),
   sendResult: (id: string, data: any) => ipcRenderer.send('send-result', { id, data }),
   sendError: (id: string, error: string) => ipcRenderer.send('send-error', { id, error }),
