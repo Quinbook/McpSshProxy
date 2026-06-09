@@ -419,7 +419,7 @@
       if (item.description) { desc.textContent = item.description; desc.classList.remove('hidden'); } else desc.classList.add('hidden');
       const ta = document.getElementById('detail-cmd'); ta.value = item.command; ta.readOnly = false;
       document.getElementById('detail-editable-hint').textContent = '(editierbar)';
-      document.getElementById('detail-output').textContent = '';
+      const out = document.getElementById('detail-output'); out.textContent = ''; out.style.display = 'none';   // output shows in the terminal below
       setButtons({ run: true, reject: true, send: false, cancel: false });
       document.getElementById('detail-status').textContent = '';
       updateDangerMode(); renderPending(); renderHistory();
@@ -444,18 +444,18 @@
       try {
         const res = await window.api.approveCommand(item.id, item.host, command);
         if (res.success) {
-          lastResult = res.data; renderResult(res.data);
+          lastResult = res.data;
+          // No output in the request panel — it's echoed into the terminal below.
           echoClaudeCommand(item.host, command, res.data);
           // Only the EXECUTION is confirmed — the result is returned to Claude automatically.
           window.api.sendResult(item.id, res.data);
           persistHistory({ host: item.host, command, status: 'sent', exitCode: res.data.code, signal: res.data.signal, stdout: res.data.stdout, stderr: res.data.stderr, description: item.description });
-          document.getElementById('detail-status').textContent = '✓ ausgeführt & an Claude gesendet';
+          document.getElementById('detail-status').textContent = `✓ exit ${res.data.code} — an Claude gesendet (Ausgabe unten im Terminal)`;
         } else {
-          renderResult(null);
-          document.getElementById('detail-output').textContent = 'Error: ' + res.error;
+          echoClaudeCommand(item.host, command, { stderr: res.error });
           window.api.sendError(item.id, res.error);
           persistHistory({ host: item.host, command, status: 'error', stderr: res.error, description: item.description });
-          document.getElementById('detail-status').textContent = '✗ Fehler — an Claude gesendet';
+          document.getElementById('detail-status').textContent = '✗ Fehler: ' + res.error;
         }
         finishPending(item.id);
       } catch (e) {
@@ -561,6 +561,7 @@
     }
 
     function renderResult(r) {
+      document.getElementById('detail-output').style.display = '';   // shown for history view
       const badge = document.getElementById('detail-badge');
       if (r && (r.code === 0 || r.code > 0)) {
         const ok = r.code === 0;
