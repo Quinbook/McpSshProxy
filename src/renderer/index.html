@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="de" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" type="image/svg+xml" href="icon.svg" />
+  <title>MCP SSH Proxy</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { font-family: 'Segoe UI', system-ui, sans-serif; }
+    .mono { font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; tab-size: 4; }
+    .fade-in { animation: fadeIn 0.2s ease-in; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+    .resize-handle { width: 4px; cursor: col-resize; background: transparent; transition: background 0.15s; flex-shrink: 0; }
+    .resize-handle:hover, .resize-handle.active { background: #3b82f6; }
+    .toast {
+      position: fixed; top: 12px; right: 12px; z-index: 9999;
+      background: #1e40af; color: white; padding: 12px 20px; border-radius: 8px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5); font-size: 13px; max-width: 350px;
+      animation: toastIn 0.3s ease-out; cursor: pointer;
+    }
+    .toast .toast-title { font-weight: 600; margin-bottom: 2px; }
+    .toast .toast-body { opacity: 0.85; font-size: 12px; }
+    @keyframes toastIn { from { opacity: 0; transform: translateX(40px); } to { opacity: 1; transform: translateX(0); } }
+    @keyframes toastOut { from { opacity: 1; } to { opacity: 0; transform: translateX(40px); } }
+
+    /* Danger-Mode: visuelle Warnung bei destruktiven Shell-Befehlen */
+    body.danger-mode { box-shadow: inset 0 0 0 4px #dc2626; animation: dangerPulse 1.6s ease-in-out infinite; }
+    @keyframes dangerPulse {
+      0%, 100% { box-shadow: inset 0 0 0 4px #dc2626; }
+      50%      { box-shadow: inset 0 0 0 6px #ef4444; }
+    }
+    body.danger-mode header { background: #7f1d1d !important; border-bottom-color: #dc2626 !important; }
+    body.danger-mode .cmd-editor { background: #1a0606 !important; box-shadow: inset 0 0 0 2px #dc2626; }
+    #danger-banner { display: none; }
+    body.danger-mode #danger-banner {
+      display: inline-flex; align-items: center; gap: 4px; background: #dc2626; color: white;
+      font-weight: 700; font-size: 11px; padding: 2px 8px; border-radius: 9999px;
+      letter-spacing: 0.5px; animation: dangerPulse 1.6s ease-in-out infinite;
+    }
+  </style>
+</head>
+<body class="h-full bg-gray-900 text-gray-100">
+  <div class="h-full flex flex-col">
+    <!-- Header -->
+    <header class="flex items-center justify-between px-4 py-2 bg-gray-800 border-b border-gray-700">
+      <div class="flex items-center gap-3">
+        <img src="icon.svg" class="w-6 h-6" alt="icon" />
+        <h1 class="text-lg font-semibold">MCP SSH Proxy</h1>
+        <span id="danger-banner" title="Destruktiver Shell-Befehl erkannt">⚠ DESTRUKTIV <span id="danger-keyword"></span></span>
+        <span id="mcp-status" class="text-xs px-2 py-0.5 rounded-full bg-yellow-600">MCP: connecting...</span>
+      </div>
+      <div class="flex gap-2">
+        <button onclick="toggleServers()" id="servers-btn" class="text-sm px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded">Servers</button>
+      </div>
+    </header>
+
+    <!-- Servers Panel (hidden by default) -->
+    <div id="servers-panel" class="hidden flex-1 flex overflow-hidden bg-gray-900">
+      <div class="border-r border-gray-700 flex flex-col overflow-hidden" style="width:300px;min-width:200px;">
+        <div class="p-3 border-b border-gray-700 flex justify-between items-center">
+          <h2 class="text-sm font-semibold text-gray-400">Configured Servers</h2>
+          <button onclick="newServer()" class="text-xs px-2 py-0.5 bg-blue-600 hover:bg-blue-500 rounded">+ Add</button>
+        </div>
+        <div id="servers-list" class="flex-1 overflow-y-auto p-2 space-y-1 text-xs">
+          <div class="text-gray-500 p-3 text-center">No servers yet</div>
+        </div>
+      </div>
+      <!-- Server Form -->
+      <div class="flex-1 overflow-auto p-6">
+        <h2 id="server-form-title" class="text-base font-semibold mb-4">Add Server</h2>
+        <input type="hidden" id="srv-id" />
+        <div class="grid grid-cols-2 gap-4 max-w-2xl">
+          <div>
+            <label class="text-xs text-gray-400">Name <span class="text-gray-600">(handle used by Claude)</span></label>
+            <input id="srv-name" class="w-full bg-gray-700 text-sm rounded px-2 py-1.5 border border-gray-600 focus:border-blue-500 outline-none" placeholder="z.B. mindhunters3" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-400">User</label>
+            <input id="srv-user" class="w-full bg-gray-700 text-sm rounded px-2 py-1.5 border border-gray-600 focus:border-blue-500 outline-none" placeholder="z.B. wz" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-400">Host / IP</label>
+            <input id="srv-host" class="w-full bg-gray-700 text-sm rounded px-2 py-1.5 border border-gray-600 focus:border-blue-500 outline-none" placeholder="z.B. mindhunters3.example.com" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-400">Port</label>
+            <input id="srv-port" type="number" value="22" class="w-full bg-gray-700 text-sm rounded px-2 py-1.5 border border-gray-600 focus:border-blue-500 outline-none" />
+          </div>
+          <div class="col-span-2">
+            <label class="text-xs text-gray-400">Authentication</label>
+            <select id="srv-auth" onchange="updateAuthFields()" class="w-full bg-gray-700 text-sm rounded px-2 py-1.5 border border-gray-600 focus:border-blue-500 outline-none">
+              <option value="key">Private Key</option>
+              <option value="password">Password</option>
+              <option value="agent">SSH Agent</option>
+            </select>
+          </div>
+          <div id="field-keypath" class="col-span-2">
+            <label class="text-xs text-gray-400">Private Key Path</label>
+            <input id="srv-keypath" class="w-full bg-gray-700 text-sm rounded px-2 py-1.5 border border-gray-600 focus:border-blue-500 outline-none mono" placeholder="C:\Users\you\.ssh\id_ed25519" />
+          </div>
+          <div id="field-passphrase">
+            <label class="text-xs text-gray-400">Key Passphrase <span class="text-gray-600">(optional)</span></label>
+            <input id="srv-passphrase" type="password" class="w-full bg-gray-700 text-sm rounded px-2 py-1.5 border border-gray-600 focus:border-blue-500 outline-none" placeholder="blank = unverändert" />
+          </div>
+          <div id="field-password">
+            <label class="text-xs text-gray-400">Password</label>
+            <input id="srv-password" type="password" class="w-full bg-gray-700 text-sm rounded px-2 py-1.5 border border-gray-600 focus:border-blue-500 outline-none" placeholder="blank = unverändert" />
+          </div>
+        </div>
+        <div class="flex gap-2 mt-5">
+          <button onclick="saveServer()" class="text-sm px-4 py-1.5 bg-blue-600 hover:bg-blue-500 rounded">Save</button>
+          <button onclick="testCurrentServer()" id="srv-test-btn" class="text-sm px-4 py-1.5 bg-gray-700 hover:bg-gray-600 rounded">Test Connection</button>
+          <button onclick="deleteCurrentServer()" id="srv-delete-btn" class="hidden text-sm px-4 py-1.5 bg-red-700 hover:bg-red-600 rounded">Delete</button>
+          <span id="srv-status" class="text-sm text-gray-400 self-center ml-2"></span>
+        </div>
+        <p class="text-xs text-gray-500 mt-4 max-w-2xl">
+          Secrets are encrypted at rest with the OS keystore (Windows DPAPI) and never returned to the UI in clear text.
+          Leave a password/passphrase field blank when editing to keep the stored value.
+        </p>
+      </div>
+    </div>
+
+    <!-- Main Content -->
+    <div id="main-content" class="flex-1 flex overflow-hidden">
+      <!-- Command Queue (left sidebar) -->
+      <div id="cmd-sidebar" class="bg-gray-800 border-r border-gray-700 flex flex-col" style="width:280px;min-width:160px;">
+        <div class="p-3 border-b border-gray-700">
+          <h2 class="text-sm font-semibold text-gray-400">Pending Commands</h2>
+        </div>
+        <div id="cmd-list" class="flex-1 overflow-y-auto p-2 space-y-1">
+          <div class="text-xs text-gray-500 p-3 text-center">No pending commands</div>
+        </div>
+        <div class="p-3 border-t border-gray-700 flex flex-col min-h-0" style="max-height:40%;">
+          <h2 class="text-sm font-semibold text-gray-400 mb-1">History</h2>
+          <div id="history-list" class="flex-1 overflow-y-auto space-y-1 text-xs"></div>
+        </div>
+      </div>
+      <div class="resize-handle" id="cmd-resize-handle"></div>
+
+      <!-- Command Detail (main area) -->
+      <div class="flex-1 flex flex-col overflow-hidden">
+        <div id="empty-state" class="flex-1 flex items-center justify-center text-gray-600 text-sm">
+          <div class="text-center">
+            <div class="text-4xl mb-2">›_</div>
+            <div>Waiting for commands from Claude…</div>
+            <div class="mt-1 text-gray-700" id="empty-hint"></div>
+          </div>
+        </div>
+
+        <div id="cmd-detail" class="hidden flex-1 flex flex-col overflow-hidden">
+          <!-- Host + description -->
+          <div class="px-4 py-2 bg-gray-800 border-b border-gray-700 flex items-center gap-3">
+            <span class="text-xs text-gray-400">Host:</span>
+            <span id="cmd-host" class="text-sm font-semibold text-emerald-300 mono"></span>
+            <span id="cmd-id" class="text-gray-600 text-xs ml-auto"></span>
+          </div>
+          <div id="cmd-description" class="px-4 py-2 bg-gray-800/60 border-b border-gray-700 text-sm text-blue-300 hidden"></div>
+
+          <!-- Command editor -->
+          <div class="flex-shrink-0 border-b border-gray-700">
+            <div class="px-4 py-1 bg-gray-800 text-xs text-gray-400">Command (editable)</div>
+            <textarea id="cmd-editor" class="cmd-editor mono w-full bg-gray-900 text-green-400 p-4 outline-none resize-y" rows="4" spellcheck="false"></textarea>
+          </div>
+
+          <!-- Action buttons -->
+          <div class="flex gap-2 px-4 py-2 bg-gray-800 border-b border-gray-700">
+            <button id="run-btn" onclick="approveCurrent()" class="px-4 py-1.5 bg-green-600 hover:bg-green-500 rounded text-sm font-medium">Run</button>
+            <button id="reject-btn" onclick="rejectCurrent()" class="px-4 py-1.5 bg-red-600 hover:bg-red-500 rounded text-sm font-medium">Reject</button>
+            <button id="cmd-cancel-btn" onclick="cancelCurrent()" class="hidden px-4 py-1.5 bg-orange-600 hover:bg-orange-500 rounded text-sm font-medium">Cancel</button>
+            <span id="cmd-status" class="text-sm text-gray-400 self-center ml-2"></span>
+          </div>
+
+          <!-- Output -->
+          <div id="output-area" class="flex-1 overflow-auto hidden flex flex-col">
+            <div class="px-4 py-2 bg-gray-800 border-b border-gray-700 flex justify-between items-center sticky top-0">
+              <span class="text-sm text-gray-400">Output <span id="exit-badge" class="ml-2"></span></span>
+              <div class="flex gap-2">
+                <button onclick="sendOutput()" class="px-3 py-1 bg-blue-600 hover:bg-blue-500 rounded text-sm">Send to Claude</button>
+              </div>
+            </div>
+            <pre id="output-content" class="flex-1 overflow-auto p-4 text-xs mono whitespace-pre-wrap text-gray-200"></pre>
+          </div>
+
+          <!-- Error -->
+          <div id="error-area" class="hidden px-4 py-3 bg-red-900/30 border-t border-red-700">
+            <p class="text-sm text-red-300" id="error-message"></p>
+            <button onclick="sendErrorToClaude()" class="mt-2 px-3 py-1 bg-red-700 hover:bg-red-600 rounded text-sm">Send Error to Claude</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // State
+    let commands = [];
+    let current = null;
+    let currentOutput = null; // { host, code, signal, stdout, stderr }
+    let currentError = null;
+    let history = [];
+
+    // --- Servers ---
+    let servers = [];
+    let serversVisible = false;
+    let editingId = null;
+
+    function showServers() {
+      serversVisible = true;
+      document.getElementById('servers-panel').classList.remove('hidden');
+      document.getElementById('main-content').classList.add('hidden');
+      document.getElementById('servers-btn').classList.add('bg-blue-600');
+      document.getElementById('servers-btn').classList.remove('bg-gray-700');
+      loadServers();
+    }
+    function hideServers() {
+      serversVisible = false;
+      document.getElementById('servers-panel').classList.add('hidden');
+      document.getElementById('main-content').classList.remove('hidden');
+      document.getElementById('servers-btn').classList.remove('bg-blue-600');
+      document.getElementById('servers-btn').classList.add('bg-gray-700');
+    }
+    function toggleServers() { serversVisible ? hideServers() : showServers(); }
+
+    async function loadServers() {
+      servers = await window.api.getServers();
+      const list = document.getElementById('servers-list');
+      if (servers.length === 0) {
+        list.innerHTML = '<div class="text-gray-500 p-3 text-center">No servers yet</div>';
+      } else {
+        list.innerHTML = servers.map(s => `
+          <div onclick="editServer('${s.id}')" class="p-2 rounded cursor-pointer hover:bg-gray-700 ${editingId === s.id ? 'bg-gray-700 border border-blue-500' : ''}">
+            <div class="font-semibold text-emerald-300">${escapeHtml(s.name)}</div>
+            <div class="text-gray-500 mono">${escapeHtml(s.user)}@${escapeHtml(s.host)}:${s.port} · ${s.authType}</div>
+          </div>`).join('');
+      }
+      updateEmptyHint();
+    }
+
+    function updateAuthFields() {
+      const auth = document.getElementById('srv-auth').value;
+      document.getElementById('field-keypath').style.display = auth === 'key' ? '' : 'none';
+      document.getElementById('field-passphrase').style.display = auth === 'key' ? '' : 'none';
+      document.getElementById('field-password').style.display = auth === 'password' ? '' : 'none';
+    }
+
+    function newServer() {
+      editingId = null;
+      document.getElementById('server-form-title').textContent = 'Add Server';
+      document.getElementById('srv-id').value = '';
+      document.getElementById('srv-name').value = '';
+      document.getElementById('srv-user').value = '';
+      document.getElementById('srv-host').value = '';
+      document.getElementById('srv-port').value = 22;
+      document.getElementById('srv-auth').value = 'key';
+      document.getElementById('srv-keypath').value = '';
+      document.getElementById('srv-passphrase').value = '';
+      document.getElementById('srv-password').value = '';
+      document.getElementById('srv-delete-btn').classList.add('hidden');
+      document.getElementById('srv-status').textContent = '';
+      updateAuthFields();
+      loadServers();
+    }
+
+    function editServer(id) {
+      const s = servers.find(x => x.id === id);
+      if (!s) return;
+      editingId = id;
+      document.getElementById('server-form-title').textContent = 'Edit Server';
+      document.getElementById('srv-id').value = s.id;
+      document.getElementById('srv-name').value = s.name;
+      document.getElementById('srv-user').value = s.user;
+      document.getElementById('srv-host').value = s.host;
+      document.getElementById('srv-port').value = s.port;
+      document.getElementById('srv-auth').value = s.authType;
+      document.getElementById('srv-keypath').value = s.keyPath || '';
+      document.getElementById('srv-passphrase').value = '';
+      document.getElementById('srv-passphrase').placeholder = s.hasPassphrase ? '•••••• (gespeichert, blank = unverändert)' : 'optional';
+      document.getElementById('srv-password').value = '';
+      document.getElementById('srv-password').placeholder = s.hasPassword ? '•••••• (gespeichert, blank = unverändert)' : '';
+      document.getElementById('srv-delete-btn').classList.remove('hidden');
+      document.getElementById('srv-status').textContent = '';
+      updateAuthFields();
+      loadServers();
+    }
+
+    async function saveServer() {
+      const payload = {
+        id: document.getElementById('srv-id').value || undefined,
+        name: document.getElementById('srv-name').value,
+        user: document.getElementById('srv-user').value,
+        host: document.getElementById('srv-host').value,
+        port: document.getElementById('srv-port').value,
+        authType: document.getElementById('srv-auth').value,
+        keyPath: document.getElementById('srv-keypath').value,
+        passphrase: document.getElementById('srv-passphrase').value,
+        password: document.getElementById('srv-password').value,
+      };
+      const res = await window.api.saveServer(payload);
+      const status = document.getElementById('srv-status');
+      if (res.success) {
+        editingId = res.id;
+        document.getElementById('srv-id').value = res.id;
+        document.getElementById('server-form-title').textContent = 'Edit Server';
+        document.getElementById('srv-delete-btn').classList.remove('hidden');
+        status.textContent = 'Saved'; status.className = 'text-sm text-green-400 self-center ml-2';
+        loadServers();
+      } else {
+        status.textContent = res.error; status.className = 'text-sm text-red-400 self-center ml-2';
+      }
+    }
+
+    async function testCurrentServer() {
+      const id = document.getElementById('srv-id').value;
+      if (!id) { document.getElementById('srv-status').textContent = 'Save the server first.'; return; }
+      const status = document.getElementById('srv-status');
+      status.textContent = 'Testing…'; status.className = 'text-sm text-yellow-400 self-center ml-2';
+      const res = await window.api.testServer(id);
+      if (res.success) { status.textContent = '✓ Connection OK'; status.className = 'text-sm text-green-400 self-center ml-2'; }
+      else { status.textContent = '✗ ' + res.error; status.className = 'text-sm text-red-400 self-center ml-2'; }
+    }
+
+    async function deleteCurrentServer() {
+      const id = document.getElementById('srv-id').value;
+      if (!id) return;
+      await window.api.deleteServer(id);
+      newServer();
+      loadServers();
+    }
+
+    function updateEmptyHint() {
+      const hint = document.getElementById('empty-hint');
+      if (!hint) return;
+      if (servers.length === 0) {
+        hint.innerHTML = 'No servers configured yet — open <b>Servers</b> to add one.';
+      } else {
+        hint.textContent = `${servers.length} server(s) configured.`;
+      }
+    }
+
+    window.api.onOpenServers(() => { if (!serversVisible) showServers(); });
+
+    // --- MCP status ---
+    let mcpClientCount = 0;
+    function updateMcpStatusDisplay() {
+      const el = document.getElementById('mcp-status');
+      if (mcpClientCount > 0) {
+        el.textContent = `MCP: connected (${mcpClientCount})`;
+        el.className = 'text-xs px-2 py-0.5 rounded-full bg-green-600';
+      } else {
+        el.textContent = 'MCP: disconnected';
+        el.className = 'text-xs px-2 py-0.5 rounded-full bg-red-600';
+      }
+    }
+    window.api.onMcpStatus((status) => { if (status === 'disconnected') mcpClientCount = 0; updateMcpStatusDisplay(); });
+    window.api.onMcpClientCount((count) => { mcpClientCount = count; updateMcpStatusDisplay(); });
+
+    // --- Command handling ---
+    window.api.onNewCommand((cmd) => {
+      if (serversVisible) hideServers();
+      commands.push(cmd);
+      renderCommandList();
+      if (!current) selectCommand(cmd.id);
+    });
+
+    function renderCommandList() {
+      const list = document.getElementById('cmd-list');
+      if (commands.length === 0) {
+        list.innerHTML = '<div class="text-xs text-gray-500 p-3 text-center">No pending commands</div>';
+        return;
+      }
+      list.innerHTML = commands.map(c => `
+        <div onclick="selectCommand('${c.id}')"
+             class="p-2 rounded cursor-pointer text-xs hover:bg-gray-700 ${current?.id === c.id ? 'bg-gray-700 border border-blue-500' : ''}">
+          <div class="text-emerald-300 font-semibold">${escapeHtml(c.host)}</div>
+          <div class="text-gray-300 truncate mono">${escapeHtml(c.command.substring(0, 70))}</div>
+        </div>`).join('');
+    }
+
+    function selectCommand(id) {
+      current = commands.find(c => c.id === id);
+      currentOutput = null;
+      currentError = null;
+      if (!current) return;
+
+      document.getElementById('empty-state').classList.add('hidden');
+      document.getElementById('cmd-detail').classList.remove('hidden');
+      document.getElementById('output-area').classList.add('hidden');
+      document.getElementById('error-area').classList.add('hidden');
+      document.getElementById('cmd-status').textContent = '';
+
+      document.getElementById('cmd-host').textContent = current.host;
+      document.getElementById('cmd-id').textContent = current.id;
+      document.getElementById('cmd-editor').value = current.command;
+      updateDangerMode();
+
+      const descEl = document.getElementById('cmd-description');
+      if (current.description) { descEl.textContent = current.description; descEl.classList.remove('hidden'); }
+      else descEl.classList.add('hidden');
+
+      renderCommandList();
+    }
+
+    function setRunning(running) {
+      document.getElementById('run-btn').classList.toggle('hidden', running);
+      document.getElementById('reject-btn').classList.toggle('hidden', running);
+      document.getElementById('cmd-cancel-btn').classList.toggle('hidden', !running);
+    }
+
+    async function approveCurrent() {
+      if (!current) return;
+      const command = document.getElementById('cmd-editor').value;
+      document.getElementById('cmd-status').textContent = 'Running…';
+      setRunning(true);
+      try {
+        const result = await window.api.approveCommand(current.id, current.host, command);
+        if (result.success) {
+          currentOutput = result.data;
+          currentError = null;
+          renderOutput();
+          document.getElementById('cmd-status').textContent = 'Done — review before sending';
+        } else {
+          currentError = result.error;
+          currentOutput = null;
+          document.getElementById('error-area').classList.remove('hidden');
+          document.getElementById('error-message').textContent = result.error;
+          document.getElementById('cmd-status').textContent = 'Error';
+        }
+      } finally {
+        setRunning(false);
+      }
+    }
+
+    async function cancelCurrent() {
+      if (!current) return;
+      const btn = document.getElementById('cmd-cancel-btn');
+      btn.disabled = true; btn.textContent = 'Cancelling…';
+      try {
+        const res = await window.api.cancelCommand(current.id);
+        document.getElementById('cmd-status').textContent = res.success ? 'Cancelled' : ('Cancel failed: ' + res.error);
+      } finally {
+        btn.disabled = false; btn.textContent = 'Cancel';
+      }
+    }
+
+    function rejectCurrent() {
+      if (!current) return;
+      window.api.rejectCommand(current.id, 'Rejected by user');
+      addToHistory(current, 'rejected');
+      removeCurrentFromQueue();
+    }
+
+    function renderOutput() {
+      if (!currentOutput) return;
+      document.getElementById('output-area').classList.remove('hidden');
+      const o = currentOutput;
+      const badge = document.getElementById('exit-badge');
+      const ok = o.code === 0;
+      badge.innerHTML = `<span class="px-2 py-0.5 rounded-full text-xs ${ok ? 'bg-green-700' : 'bg-red-700'}">exit ${o.code}${o.signal ? ' / ' + o.signal : ''}</span>`;
+      let text = '';
+      if (o.stdout) text += o.stdout;
+      if (o.stderr) text += (text ? '\n' : '') + '\x1b[stderr]\n' + o.stderr;
+      if (!text) text = '(no output)';
+      document.getElementById('output-content').textContent = text;
+    }
+
+    function sendOutput() {
+      if (!current || !currentOutput) return;
+      window.api.sendResult(current.id, currentOutput);
+      addToHistory(current, 'sent');
+      removeCurrentFromQueue();
+    }
+
+    function sendErrorToClaude() {
+      if (!current || !currentError) return;
+      window.api.sendError(current.id, currentError);
+      addToHistory(current, 'error');
+      removeCurrentFromQueue();
+    }
+
+    function removeCurrentFromQueue() {
+      commands = commands.filter(c => c.id !== current.id);
+      current = null; currentOutput = null; currentError = null;
+      if (commands.length > 0) {
+        selectCommand(commands[0].id);
+      } else {
+        document.getElementById('empty-state').classList.remove('hidden');
+        document.getElementById('cmd-detail').classList.add('hidden');
+        renderCommandList();
+        updateDangerMode();
+      }
+    }
+
+    // --- History ---
+    function addToHistory(cmd, status) {
+      history.unshift({ host: cmd.host, command: cmd.command, status, time: new Date().toLocaleTimeString() });
+      if (history.length > 50) history.pop();
+      renderHistory();
+    }
+    function renderHistory() {
+      const list = document.getElementById('history-list');
+      list.innerHTML = history.map(h => {
+        const color = h.status === 'sent' ? 'text-green-400' : h.status === 'rejected' ? 'text-red-400' : 'text-yellow-400';
+        return `<div class="p-1 rounded">
+          <span class="${color}">[${h.status}]</span> <span class="text-gray-500">${h.time}</span> <span class="text-emerald-300">${escapeHtml(h.host)}</span>
+          <div class="text-gray-400 mono truncate">${escapeHtml(h.command.substring(0, 80))}</div>
+        </div>`;
+      }).join('');
+    }
+
+    // --- Danger-Mode ---
+    const DANGER_REGEX = /(\brm\b|\brmdir\b|\bdd\b|\bmkfs\b|\bshutdown\b|\breboot\b|\bhalt\b|\bpoweroff\b|\bkill\b|\bkillall\b|\bpkill\b|\bsudo\b|\bsu\b|\bchmod\b|\bchown\b|\bmv\b|\b(systemctl|service)\s+\S+\s*(stop|restart|disable|mask)|\btruncate\b|\bdrop\b|>\s*\/|>>\s*\/|\bcrontab\b|\biptables\b|\bufw\b|\buserdel\b|\bgroupdel\b|\bmount\b|\bumount\b)/i;
+    function detectDanger(cmd) {
+      if (!cmd) return null;
+      const m = cmd.match(DANGER_REGEX);
+      return m ? m[0].trim().split(/\s+/)[0].toUpperCase() : null;
+    }
+    function updateDangerMode() {
+      const detailVisible = !document.getElementById('cmd-detail').classList.contains('hidden');
+      const cmd = detailVisible ? document.getElementById('cmd-editor').value : '';
+      const keyword = detectDanger(cmd);
+      document.body.classList.toggle('danger-mode', !!keyword);
+      const kwEl = document.getElementById('danger-keyword');
+      if (kwEl) kwEl.textContent = keyword ? '· ' + keyword : '';
+    }
+
+    // --- Helpers ---
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str == null ? '' : String(str);
+      return div.innerHTML;
+    }
+
+    function initResize(handleId, sidebarId) {
+      const handle = document.getElementById(handleId);
+      const sidebar = document.getElementById(sidebarId);
+      if (!handle || !sidebar) return;
+      let startX, startW;
+      handle.addEventListener('mousedown', (e) => {
+        startX = e.clientX; startW = sidebar.offsetWidth;
+        handle.classList.add('active');
+        document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none';
+        const onMove = (e) => { sidebar.style.width = Math.max(160, Math.min(startW + (e.clientX - startX), 600)) + 'px'; };
+        const onUp = () => {
+          handle.classList.remove('active');
+          document.body.style.cursor = ''; document.body.style.userSelect = '';
+          document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp);
+        };
+        document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp);
+      });
+    }
+
+    function showToast(title, body) {
+      const toast = document.createElement('div');
+      toast.className = 'toast';
+      toast.innerHTML = `<div class="toast-title">${escapeHtml(title)}</div><div class="toast-body">${escapeHtml(body)}</div>`;
+      toast.onclick = () => toast.remove();
+      document.body.appendChild(toast);
+      setTimeout(() => { if (toast.parentNode) { toast.style.animation = 'toastOut 0.3s ease-in forwards'; setTimeout(() => toast.remove(), 300); } }, 5000);
+    }
+    window.api.onShowNotification((data) => {
+      showToast(data.title, data.body);
+      if (Notification.permission === 'granted') new Notification(data.title, { body: data.body });
+    });
+
+    function generateAppIcon() {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 256; canvas.height = 256;
+        canvas.getContext('2d').drawImage(img, 0, 0, 256, 256);
+        window.api.setAppIcon(canvas.toDataURL('image/png'));
+      };
+      img.src = 'icon.svg';
+    }
+
+    // --- Init ---
+    loadServers();
+    initResize('cmd-resize-handle', 'cmd-sidebar');
+    generateAppIcon();
+    document.getElementById('cmd-editor').addEventListener('input', updateDangerMode);
+    if (Notification.permission !== 'granted' && Notification.permission !== 'denied') Notification.requestPermission();
+  </script>
+</body>
+</html>
