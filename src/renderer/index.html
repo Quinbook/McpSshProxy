@@ -178,14 +178,12 @@
           </div>
         </div>
         <div class="vsplit" id="vsplit-handle"></div>
-        <!-- Terminal -->
+        <!-- Terminals (multi-session tabs) -->
         <div class="flex-1 flex flex-col overflow-hidden bg-black">
-          <div class="px-3 py-1 bg-gray-800 border-b border-gray-700 flex items-center gap-2 text-xs">
-            <span class="text-gray-400">Terminal:</span>
-            <span id="term-label" class="text-emerald-300 mono">— nicht verbunden —</span>
-            <button onclick="disconnectTerminal()" id="term-disc-btn" class="hidden ml-auto px-2 py-0.5 bg-gray-700 hover:bg-gray-600 rounded">Trennen</button>
+          <div id="term-tabs" class="flex items-stretch bg-gray-800 border-b border-gray-700 text-xs overflow-x-auto" style="min-height:28px;"></div>
+          <div id="terminals" class="flex-1 relative">
+            <div id="term-empty" class="absolute inset-0 flex items-center justify-center text-gray-600 text-sm text-center px-4">Kein Terminal verbunden — Server links wählen und „Terminal verbinden". Mehrere Server gleichzeitig möglich (Tabs).</div>
           </div>
-          <div id="terminal" class="flex-1"></div>
         </div>
       </div>
     </div>
@@ -376,6 +374,7 @@
     // ---------- Pending commands ----------
     window.api.onNewCommand((cmd) => {
       pending.push(cmd); renderPending();
+      markActivity(cmd.host);
       if (!selected) selectPending(cmd.id);
       showToast('Neuer Befehl', `${cmd.host}: wartet auf Freigabe`);
     });
@@ -421,6 +420,8 @@
         const res = await window.api.approveCommand(item.id, item.host, command);
         if (res.success) {
           lastResult = res.data; renderResult(res.data);
+          // Echo into the target host's terminal so it's visible even from another tab.
+          termEcho(item.host, `\r\n\x1b[2m$ ${command}\x1b[0m\r\n` + (res.data.stdout || '') + (res.data.stderr ? '\x1b[31m' + res.data.stderr + '\x1b[0m' : ''));
           document.getElementById('detail-status').textContent = 'Done — review, then Send to Claude';
           setButtons({ run: false, reject: false, send: true, cancel: false });
         } else {
@@ -535,45 +536,90 @@
     function showDetail() { document.getElementById('detail-empty').classList.add('hidden'); document.getElementById('detail-body').classList.remove('hidden'); }
     function hideDetail() { document.getElementById('detail-empty').classList.remove('hidden'); document.getElementById('detail-body').classList.add('hidden'); selected = null; updateDangerMode(); }
 
-    // ---------- Terminal (xterm + ssh2 shell) ----------
-    let term = null, fitAddon = null, termSid = null, termHost = '';
-    function initTerm() {
-      term = new Terminal({ fontFamily: 'Cascadia Code, Consolas, monospace', fontSize: 13, cursorBlink: true, theme: { background: '#000000' } });
-      fitAddon = new FitAddon.FitAddon();
-      term.loadAddon(fitAddon);
-      term.open(document.getElementById('terminal'));
-      fitTerm();
-      term.onData(d => { if (termSid) window.api.termInput(termSid, d); });
-      window.addEventListener('resize', fitTerm);
-    }
-    function fitTerm() { try { if (fitAddon) { fitAddon.fit(); if (termSid && term) window.api.termResize(termSid, term.cols, term.rows); } } catch {} }
+    // ---------- Terminals (multiple concurrent xterm + ssh2 shell sessions, tabbed) ----------
+    let sessions = [];   // { sid, host, term, fit, container, connected }
+    let activeSid = null;
+
+    function updateTermEmpty() { document.getElementById('term-empty').style.display = sessions.length ? 'none' : 'flex'; }
+
     async function connectTerminal() {
       if (!currentHost) { showToast('Terminal', 'Kein Server gewählt'); return; }
-      if (termSid) disconnectTerminal();
-      term.reset(); fitTerm();
-      termHost = currentHost;
-      termSid = 'term_' + Date.now();
-      document.getElementById('term-label').textContent = currentHost + ' (verbinde…)';
-      const res = await window.api.termOpen(termSid, currentHost, term.cols, term.rows);
-      if (res.success) {
-        document.getElementById('term-label').textContent = currentHost + ' ✓';
-        document.getElementById('term-disc-btn').classList.remove('hidden');
-        term.focus();
-      } else {
-        term.writeln('\x1b[31mConnect failed: ' + res.error + '\x1b[0m');
-        document.getElementById('term-label').textContent = currentHost + ' ✗';
-        termSid = null;
+      const existing = sessions.find(s => s.host === currentHost);
+      if (existing) { activateSession(existing.sid); return; }   // already connected → just switch to it
+
+      const sid = 'term_' + Date.now() + '_' + Math.floor(Math.random() * 100000);
+      const container = document.createElement('div');
+      container.className = 'absolute inset-0';
+      container.style.display = 'none';
+      document.getElementById('terminals').appendChild(container);
+
+      const term = new Terminal({ fontFamily: 'Cascadia Code, Consolas, monospace', fontSize: 13, cursorBlink: true, theme: { background: '#000000' } });
+      const fit = new FitAddon.FitAddon();
+      term.loadAddon(fit);
+      term.open(container);
+      term.onData(d => window.api.termInput(sid, d));
+
+      const sess = { sid, host: currentHost, term, fit, container, connected: false, unread: false };
+      sessions.push(sess);
+      updateTermEmpty();
+      activateSession(sid);
+      term.writeln('\x1b[2mVerbinde mit ' + currentHost + '…\x1b[0m');
+
+      const res = await window.api.termOpen(sid, currentHost, term.cols || 80, term.rows || 24);
+      if (res.success) { sess.connected = true; renderTabs(); term.focus(); }
+      else { term.writeln('\x1b[31mConnect failed: ' + res.error + '\x1b[0m'); renderTabs(); }
+    }
+
+    function activateSession(sid) {
+      activeSid = sid;
+      sessions.forEach(s => { s.container.style.display = s.sid === sid ? 'block' : 'none'; });
+      const sess = sessions.find(s => s.sid === sid);
+      if (sess) {
+        sess.unread = false;
+        currentHost = sess.host;
+        const dd = document.getElementById('term-host');
+        if ([...dd.options].some(o => o.value === sess.host)) dd.value = sess.host;
+        document.getElementById('history-host-label').textContent = '· ' + sess.host;
+        renderHistory();
+        setTimeout(() => { try { sess.fit.fit(); if (sess.connected) window.api.termResize(sid, sess.term.cols, sess.term.rows); sess.term.focus(); } catch {} }, 0);
       }
+      renderTabs();
     }
-    function disconnectTerminal() {
-      if (termSid) window.api.termClose(termSid);
-      termSid = null; termHost = '';
-      document.getElementById('term-label').textContent = '— nicht verbunden —';
-      document.getElementById('term-disc-btn').classList.add('hidden');
+
+    function closeSession(sid) {
+      const i = sessions.findIndex(s => s.sid === sid); if (i < 0) return;
+      const sess = sessions[i];
+      try { window.api.termClose(sid); } catch {}
+      try { sess.term.dispose(); } catch {}
+      sess.container.remove();
+      sessions.splice(i, 1);
+      updateTermEmpty();
+      if (activeSid === sid) { activeSid = null; if (sessions.length) activateSession(sessions[Math.max(0, i - 1)].sid); else renderTabs(); }
+      else renderTabs();
     }
-    window.api.onTermData(({ sid, data }) => { if (sid === termSid && term) term.write(data); });
-    window.api.onTermClosed(({ sid }) => { if (sid === termSid) { term && term.writeln('\r\n\x1b[2m[Verbindung geschlossen]\x1b[0m'); disconnectTerminal(); } });
-    function termEcho(host, text) { if (term && termSid && host === termHost) term.write(text.replace(/\n/g, '\r\n')); }
+
+    function renderTabs() {
+      document.getElementById('term-tabs').innerHTML = sessions.map(s => `
+        <div onclick="activateSession('${s.sid}')" class="flex items-center gap-1 px-3 py-1 border-r border-gray-700 cursor-pointer whitespace-nowrap ${s.sid === activeSid ? 'bg-black text-emerald-300' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}">
+          <span>${s.connected ? '●' : '○'} ${escapeHtml(s.host)}</span>
+          ${s.unread && s.sid !== activeSid ? '<span class="inline-block w-2 h-2 rounded-full bg-amber-400" title="neue Aktivität"></span>' : ''}
+          <button onclick="event.stopPropagation();closeSession('${s.sid}')" class="ml-1 text-gray-500 hover:text-red-400">✕</button>
+        </div>`).join('');
+    }
+
+    function fitTerm() {
+      const sess = sessions.find(s => s.sid === activeSid);
+      if (sess) { try { sess.fit.fit(); if (sess.connected) window.api.termResize(sess.sid, sess.term.cols, sess.term.rows); } catch {} }
+    }
+
+    window.api.onTermData(({ sid, data }) => { const s = sessions.find(x => x.sid === sid); if (s) s.term.write(data); });
+    window.api.onTermClosed(({ sid }) => { const s = sessions.find(x => x.sid === sid); if (s) { s.connected = false; s.term.writeln('\r\n\x1b[2m[Verbindung geschlossen]\x1b[0m'); renderTabs(); } });
+    function termEcho(host, text) {
+      const s = sessions.find(x => x.host === host && x.connected);
+      if (s) { s.term.write(text.replace(/\n/g, '\r\n')); if (s.sid !== activeSid) { s.unread = true; renderTabs(); } }
+    }
+    // Highlight a host's tab when Claude touches it while you're looking elsewhere.
+    function markActivity(host) { const s = sessions.find(x => x.host === host); if (s && s.sid !== activeSid) { s.unread = true; renderTabs(); } }
 
     // ---------- MCP status ----------
     let mcpClientCount = 0;
@@ -625,7 +671,8 @@
 
     // ---------- Init ----------
     document.getElementById('detail-cmd').addEventListener('input', updateDangerMode);
-    initTerm();
+    updateTermEmpty();
+    window.addEventListener('resize', fitTerm);
     initResizeH('cmd-resize-handle', 'cmd-sidebar');
     initResizeV();
     generateAppIcon();
