@@ -4,7 +4,18 @@ A human-in-the-loop **SSH bridge for AI agents**. It exposes an [MCP](https://mo
 
 Servers are configured **only in the app's UI** — nothing is hardcoded, and credentials are encrypted at rest with the OS keystore (Windows DPAPI via Electron `safeStorage`).
 
-> Sibling project to [MCP SQL Proxy](https://github.com/) — same approval-loop architecture, applied to SSH instead of SQL.
+> Sibling project to **MCP SQL Proxy** — same approval-loop architecture, applied to SSH instead of SQL.
+
+## Features
+
+- 🔐 **Human-in-the-loop approval** — every agent command is shown for review (Run / edit / Reject) before it runs; the result is returned to the agent automatically.
+- ⚙️ **Per-command confirm modes** — a global *confirm-each* ⟷ *auto-run* switch, overridable per server (`always confirm` / `auto`).
+- 🖥️ **Built-in interactive terminals** — full PuTTY-style xterm.js shells, **multiple servers at once in tabs**; type freely, see colors/vim/live output. Agent commands are echoed into the matching server's terminal as a labelled blue bar.
+- 🗂️ **Multi-server aware** — pending requests are scoped to the selected server with a `!` badge on the others; idle target servers are auto-connected on demand.
+- 🔑 **Any key format** — OpenSSH, PEM/PKCS#8, **and PuTTY `.ppk` (v2 & v3)** are detected and converted automatically; key, password, or ssh-agent auth.
+- 📥 **PuTTY session import** — pull saved sessions (host/port/user/key) straight from the Windows registry.
+- 🕑 **Persistent per-server history** — every executed command is stored across sessions.
+- 🛑 **Danger mode** — destructive commands (`rm`, `dd`, `shutdown`, `sudo`, `systemctl stop`, redirects into `/`, …) flash the window red.
 
 ## Why
 
@@ -19,7 +30,7 @@ Claude / MCP client ──stdio──► MCP server ──WebSocket(127.0.0.1:52
 
 - **MCP server** (`src/mcp/server.ts`) — speaks MCP over stdio, forwards each request to the desktop app and waits for the result. Auto-launches the app if it isn't running.
 - **Electron app** (`src/electron/main.ts`) — holds the server list, renders the approval queue, and runs approved commands via [`ssh2`](https://github.com/mscdex/ssh2). Single-instance: many MCP clients share one window.
-- **Renderer** (`src/renderer/index.html`) — the UI: server manager + pending-command queue + live output.
+- **Renderer** (`src/renderer/index.html`) — the UI: server list, per-server approval panel, tabbed interactive terminals (xterm.js), and all-server history.
 
 Nothing binds to anything but `127.0.0.1`.
 
