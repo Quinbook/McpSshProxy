@@ -1,5 +1,6 @@
-import { app, BrowserWindow, ipcMain, Notification, safeStorage, nativeImage } from 'electron';
+import { app, BrowserWindow, ipcMain, Notification, safeStorage, nativeImage, dialog } from 'electron';
 import * as path from 'path';
+import * as os from 'os';
 import * as fs from 'fs';
 import { WebSocketServer, WebSocket } from 'ws';
 import * as http from 'http';
@@ -407,6 +408,17 @@ ipcMain.handle('test-server', async (_event, { id }) => {
   } catch (e: any) {
     return { success: false, error: e.message };
   }
+});
+
+ipcMain.handle('pick-key-file', async () => {
+  const sshDir = path.join(os.homedir(), '.ssh');
+  const result = await dialog.showOpenDialog(mainWindow!, {
+    title: 'Select SSH private key',
+    defaultPath: fs.existsSync(sshDir) ? sshDir : os.homedir(),
+    properties: ['openFile', 'showHiddenFiles'],
+  });
+  if (result.canceled || result.filePaths.length === 0) return '';
+  return result.filePaths[0];
 });
 
 ipcMain.on('set-app-icon', (_event, pngDataUrl: string) => {

@@ -73,7 +73,7 @@
         <div class="grid grid-cols-2 gap-4 max-w-2xl">
           <div>
             <label class="text-xs text-gray-400">Name <span class="text-gray-600">(handle used by Claude)</span></label>
-            <input id="srv-name" class="w-full bg-gray-700 text-sm rounded px-2 py-1.5 border border-gray-600 focus:border-blue-500 outline-none" placeholder="z.B. mindhunters3" />
+            <input id="srv-name" class="w-full bg-gray-700 text-sm rounded px-2 py-1.5 border border-gray-600 focus:border-blue-500 outline-none" placeholder="z.B. web-01" />
           </div>
           <div>
             <label class="text-xs text-gray-400">User</label>
@@ -81,7 +81,7 @@
           </div>
           <div>
             <label class="text-xs text-gray-400">Host / IP</label>
-            <input id="srv-host" class="w-full bg-gray-700 text-sm rounded px-2 py-1.5 border border-gray-600 focus:border-blue-500 outline-none" placeholder="z.B. mindhunters3.example.com" />
+            <input id="srv-host" class="w-full bg-gray-700 text-sm rounded px-2 py-1.5 border border-gray-600 focus:border-blue-500 outline-none" placeholder="z.B. web-01.example.com" />
           </div>
           <div>
             <label class="text-xs text-gray-400">Port</label>
@@ -97,7 +97,10 @@
           </div>
           <div id="field-keypath" class="col-span-2">
             <label class="text-xs text-gray-400">Private Key Path</label>
-            <input id="srv-keypath" class="w-full bg-gray-700 text-sm rounded px-2 py-1.5 border border-gray-600 focus:border-blue-500 outline-none mono" placeholder="C:\Users\you\.ssh\id_ed25519" />
+            <div class="flex gap-2">
+              <input id="srv-keypath" class="flex-1 bg-gray-700 text-sm rounded px-2 py-1.5 border border-gray-600 focus:border-blue-500 outline-none mono" placeholder="C:\Users\you\.ssh\id_ed25519" />
+              <button type="button" onclick="browseKeyPath()" class="text-sm px-3 py-1.5 bg-gray-600 hover:bg-gray-500 rounded whitespace-nowrap">Durchsuchen…</button>
+            </div>
           </div>
           <div id="field-passphrase">
             <label class="text-xs text-gray-400">Key Passphrase <span class="text-gray-600">(optional)</span></label>
@@ -235,6 +238,11 @@
           </div>`).join('');
       }
       updateEmptyHint();
+    }
+
+    async function browseKeyPath() {
+      const p = await window.api.pickKeyFile();
+      if (p) document.getElementById('srv-keypath').value = p;
     }
 
     function updateAuthFields() {

@@ -45,7 +45,7 @@ npm start
 
 Open **Servers → + Add** and configure a host:
 
-- **Name** — the handle the agent uses (e.g. `mindhunters3`)
+- **Name** — the handle the agent uses (e.g. `web-01`)
 - **User / Host / Port**
 - **Authentication** — Private Key (with optional passphrase), Password, or SSH Agent
 

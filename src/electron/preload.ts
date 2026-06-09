@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('api', {
   saveServer: (server: any) => ipcRenderer.invoke('save-server', server),
   deleteServer: (id: string) => ipcRenderer.invoke('delete-server', { id }),
   testServer: (id: string) => ipcRenderer.invoke('test-server', { id }),
+  pickKeyFile: () => ipcRenderer.invoke('pick-key-file'),
   onOpenServers: (callback: () => void) => {
     ipcRenderer.on('open-servers', () => callback());
   },
