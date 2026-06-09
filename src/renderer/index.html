@@ -196,9 +196,10 @@
         <button onclick="closePuttyModal()" class="text-gray-400 hover:text-white text-lg leading-none">✕</button>
       </div>
       <div id="putty-list" class="flex-1 overflow-y-auto p-3 space-y-1 text-sm"></div>
-      <div class="p-3 border-t border-gray-700 flex justify-between items-center">
-        <span id="putty-status" class="text-xs text-gray-400"></span>
-        <button onclick="importAllPutty()" class="text-sm px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded">Import all new</button>
+      <div class="p-3 border-t border-gray-700 flex justify-between items-center gap-3">
+        <label class="text-xs text-gray-400 flex items-center gap-1 whitespace-nowrap"><input type="checkbox" id="putty-all" onchange="togglePuttyAll(this.checked)" /> alle/keine</label>
+        <span id="putty-status" class="text-xs text-gray-400 flex-1 truncate"></span>
+        <button onclick="importSelectedPutty()" class="text-sm px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded whitespace-nowrap">Ausgewählte importieren</button>
       </div>
     </div>
   </div>
@@ -330,11 +331,17 @@
       const ex = new Set(servers.map(s => s.name.toLowerCase()));
       document.getElementById('putty-list').innerHTML = puttySessions.map((s, i) => {
         const dup = ex.has(s.name.toLowerCase());
-        return `<div class="p-2 rounded bg-gray-900 flex items-center justify-between gap-3">
-          <div class="min-w-0"><div class="font-semibold text-emerald-300 truncate">${escapeHtml(s.name)} ${dup ? '<span class="text-xs text-gray-500">(exists)</span>' : ''}</div>
+        const importable = !dup && !!s.user;
+        const flag = dup ? '<span class="text-xs text-gray-500">(vorhanden)</span>' : (!s.user ? '<span class="text-xs text-yellow-500">(kein User)</span>' : '');
+        return `<div class="p-2 rounded bg-gray-900 flex items-center gap-2">
+          <input type="checkbox" class="putty-cb w-4 h-4 flex-shrink-0" data-i="${i}" ${importable ? 'checked' : ''} ${importable ? '' : 'disabled'} />
+          <div class="min-w-0 flex-1"><div class="font-semibold text-emerald-300 truncate">${escapeHtml(s.name)} ${flag}</div>
           <div class="text-gray-500 mono text-xs truncate">${escapeHtml(s.user || '?')}@${escapeHtml(s.host)}:${s.port} · ${s.authType}${s.keyPath ? ' · ' + escapeHtml(s.keyPath) : ''}</div></div>
           <button onclick="loadPuttyToForm(${i})" class="text-xs px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded whitespace-nowrap">Edit &amp; Save</button></div>`;
       }).join('');
+    }
+    function togglePuttyAll(checked) {
+      document.querySelectorAll('.putty-cb').forEach(cb => { if (!cb.disabled) cb.checked = checked; });
     }
     function loadPuttyToForm(i) {
       const s = puttySessions[i]; closePuttyModal(); newServer();
@@ -344,14 +351,17 @@
       updateAuthFields();
       if (!s.user) { const st = document.getElementById('srv-status'); st.textContent = 'PuTTY stored no username — please fill it in.'; st.className = 'text-sm text-yellow-400 self-center ml-2'; }
     }
-    async function importAllPutty() {
-      const ex = new Set(servers.map(s => s.name.toLowerCase())); let added = 0, skipped = 0;
-      for (const s of puttySessions) {
-        if (ex.has(s.name.toLowerCase()) || !s.user) { skipped++; continue; }
+    async function importSelectedPutty() {
+      const ex = new Set(servers.map(s => s.name.toLowerCase()));
+      const checked = [...document.querySelectorAll('.putty-cb')].filter(cb => cb.checked && !cb.disabled);
+      let added = 0, skipped = 0;
+      for (const cb of checked) {
+        const s = puttySessions[+cb.dataset.i];
+        if (!s || ex.has(s.name.toLowerCase()) || !s.user) { skipped++; continue; }
         const res = await window.api.saveServer({ name: s.name, user: s.user, host: s.host, port: s.port, authType: s.authType, keyPath: s.keyPath || '' });
         res.success ? added++ : skipped++;
       }
-      document.getElementById('putty-status').textContent = `Imported ${added}, skipped ${skipped} (existing or missing username).`;
+      document.getElementById('putty-status').textContent = checked.length ? `Importiert: ${added}, übersprungen: ${skipped}.` : 'Nichts ausgewählt.';
       await loadServers(); renderPuttyList();
     }
 
