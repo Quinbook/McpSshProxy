@@ -159,7 +159,7 @@
         <div id="detail-panel" class="flex flex-col border-b border-gray-700" style="flex-shrink:0; max-height:55%; overflow:auto; display:none;">
           <div id="detail-empty" class="hidden"></div>
           <div id="detail-body" class="hidden flex flex-col">
-            <div class="px-4 py-2 bg-gray-800 border-b border-gray-700 flex items-center gap-3">
+            <div id="detail-headrow" class="px-4 py-2 bg-gray-800 border-b border-gray-700 flex items-center gap-3">
               <span id="detail-host" class="text-sm font-semibold text-emerald-300 mono"></span>
               <span id="detail-badge"></span>
               <span id="detail-id" class="text-gray-600 text-xs ml-auto"></span>
@@ -406,9 +406,8 @@
       const item = pending.find(c => c.id === id); if (!item) return;
       selected = { kind: 'pending', item };
       showDetail();
-      document.getElementById('detail-host').textContent = '';   // server already shown in the toolbar
-      document.getElementById('detail-id').textContent = item.id;
-      document.getElementById('detail-badge').innerHTML = '<span class="px-2 py-0.5 rounded-full text-xs bg-amber-600">pending</span>';
+      // No header row for a pending request — the panel only appears while something is pending.
+      document.getElementById('detail-headrow').style.display = 'none';
       const desc = document.getElementById('detail-desc');
       if (item.description) { desc.textContent = item.description; desc.classList.remove('hidden'); } else desc.classList.add('hidden');
       const ta = document.getElementById('detail-cmd'); ta.value = item.command; ta.readOnly = false;
@@ -535,6 +534,7 @@
       const h = history[idx]; if (!h) return;
       selected = { kind: 'history', item: h };
       showDetail();
+      document.getElementById('detail-headrow').style.display = '';   // history shows server + status
       document.getElementById('detail-host').textContent = h.host;
       document.getElementById('detail-id').textContent = h.time || '';
       document.getElementById('detail-badge').innerHTML = `<span class="px-2 py-0.5 rounded-full text-xs bg-gray-600">${h.status}</span>`;
