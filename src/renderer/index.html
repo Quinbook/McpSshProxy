@@ -436,6 +436,9 @@
       if (!selected || selected.kind !== 'pending') return;
       const item = selected.item;
       const command = document.getElementById('detail-cmd').value;
+      // Make sure a terminal exists for this host so the command + output stay visible
+      // (e.g. after you disconnected it). Background connect unless it's the active server.
+      if (!sessions.find(s => s.host === item.host)) openTerminalSession(item.host, item.host === currentHost);
       document.getElementById('detail-status').textContent = 'Running…';
       setButtons({ run: false, reject: false, send: false, cancel: true });
       try {
@@ -695,11 +698,11 @@
     }
 
     function toggleTerminal() {
-      const sess = sessions.find(s => s.host === currentHost && s.connected);
+      const sess = sessions.find(s => s.host === currentHost);   // connected OR still connecting
       if (sess) closeSession(sess.sid); else connectTerminal();
     }
     function updateConnectBtn() {
-      const sess = sessions.find(s => s.host === currentHost && s.connected);
+      const sess = sessions.find(s => s.host === currentHost);
       const btn = document.getElementById('term-connect-btn');
       if (!btn) return;
       if (sess) { btn.textContent = 'Terminal trennen'; btn.className = 'text-xs px-3 py-1 bg-red-700 hover:bg-red-600 rounded'; }

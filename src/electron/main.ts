@@ -648,7 +648,7 @@ ipcMain.on('set-app-icon', (_event, pngDataUrl: string) => {
 });
 
 // --- App lifecycle ---
-app.setAppUserModelId('com.woizzer.mcp-ssh-proxy');
+app.setAppUserModelId('com.quinbook.mcp-ssh-proxy');
 
 app.on('second-instance', () => {
   if (mainWindow) {
