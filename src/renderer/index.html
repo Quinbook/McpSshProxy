@@ -129,27 +129,33 @@
     <div id="main-content" class="flex-1 flex overflow-hidden">
       <!-- Left sidebar -->
       <div id="cmd-sidebar" class="bg-gray-800 border-r border-gray-700 flex flex-col" style="width:300px;min-width:180px;">
-        <div class="p-2 border-b border-gray-700 space-y-2">
-          <select id="term-host" onchange="onHostChange()" class="w-full bg-gray-700 text-sm rounded px-2 py-1 border border-gray-600 outline-none"></select>
-          <button onclick="toggleTerminal()" id="term-connect-btn" class="w-full text-sm px-3 py-1 bg-emerald-700 hover:bg-emerald-600 rounded">Terminal verbinden</button>
+        <!-- Server list (top, resizable) -->
+        <div id="server-list-panel" class="flex flex-col overflow-hidden" style="height:45%;">
+          <div class="px-3 py-2 border-b border-gray-700 text-xs font-semibold text-gray-400">Server <span class="text-gray-600">(klicken zum Wechseln)</span></div>
+          <div id="server-list" class="flex-1 overflow-y-auto p-2 space-y-1 text-xs"></div>
         </div>
-        <!-- Pending -->
-        <div class="px-3 pt-2 pb-1 text-xs font-semibold text-amber-300">Pending (Freigabe)</div>
-        <div id="pending-list" class="overflow-y-auto px-2 space-y-1" style="max-height:32%;">
-          <div class="text-xs text-gray-500 p-2 text-center">keine</div>
+        <div class="vsplit" id="left-vsplit" title="ziehen zum Verschieben"></div>
+        <!-- History over all servers (bottom) -->
+        <div class="flex-1 flex flex-col overflow-hidden border-t border-gray-700">
+          <div class="px-3 py-2 border-b border-gray-700 flex justify-between items-center">
+            <span class="text-xs font-semibold text-gray-400">Verlauf <span class="text-gray-600">(alle Server)</span></span>
+            <button onclick="clearAllHistory()" class="text-xs text-gray-500 hover:text-red-400" title="Gesamten Verlauf löschen">clear</button>
+          </div>
+          <div id="history-list" class="flex-1 overflow-y-auto px-2 py-1 space-y-1 text-xs"></div>
         </div>
-        <!-- History -->
-        <div class="px-3 pt-2 pb-1 flex justify-between items-center border-t border-gray-700">
-          <span class="text-xs font-semibold text-gray-400">Verlauf <span id="history-host-label" class="text-gray-600"></span></span>
-          <button onclick="clearHistoryForHost()" class="text-xs text-gray-500 hover:text-red-400" title="Verlauf dieses Servers löschen">clear</button>
-        </div>
-        <div id="history-list" class="flex-1 overflow-y-auto px-2 space-y-1 text-xs"></div>
       </div>
       <div class="resize-handle" id="cmd-resize-handle"></div>
 
-      <!-- Middle: detail (top) + terminal (bottom) -->
+      <!-- Middle: toolbar + detail (top) + terminal (bottom) -->
       <div class="flex-1 flex flex-col overflow-hidden">
-        <!-- Detail / approval -->
+        <!-- Toolbar: selected server + connect toggle + open requests -->
+        <div id="main-toolbar" class="px-3 py-1.5 bg-gray-800 border-b border-gray-700 flex items-center gap-3">
+          <span class="text-xs text-gray-500">Server:</span>
+          <span id="tb-host" class="text-sm font-semibold text-emerald-300 mono">—</span>
+          <button onclick="toggleTerminal()" id="term-connect-btn" class="text-xs px-3 py-1 bg-emerald-700 hover:bg-emerald-600 rounded">Terminal verbinden</button>
+          <div id="pending-chips" class="flex items-center gap-1 flex-wrap ml-auto"></div>
+        </div>
+        <!-- Detail / approval (open request) -->
         <div id="detail-panel" class="flex flex-col overflow-hidden border-b border-gray-700" style="height:42%;">
           <div id="detail-empty" class="flex-1 flex items-center justify-center text-gray-600 text-sm text-center px-4">
             <div>
@@ -248,7 +254,8 @@
           <div class="font-semibold text-emerald-300">${escapeHtml(s.name)}</div>
           <div class="text-gray-500 mono">${escapeHtml(s.user)}@${escapeHtml(s.host)}:${s.port} · ${s.authType}${s.confirmPolicy && s.confirmPolicy !== 'global' ? ' · ' + s.confirmPolicy : ''}</div>
         </div>`).join('') : '<div class="text-gray-500 p-3 text-center">No servers yet</div>';
-      refreshHostDropdown();
+      renderServerList();
+      if (!currentHost && servers.length) selectHost(servers[0].name);
     }
     function updateAuthFields() {
       const a = document.getElementById('srv-auth').value;
@@ -355,21 +362,26 @@
       await loadServers(); renderPuttyList();
     }
 
-    // ---------- Host dropdown ----------
-    function refreshHostDropdown() {
-      const sel = document.getElementById('term-host');
-      const prev = sel.value;
-      sel.innerHTML = servers.map(s => `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`).join('');
-      if (servers.find(s => s.name === prev)) sel.value = prev;
-      currentHost = sel.value || '';
-      document.getElementById('history-host-label').textContent = currentHost ? '· ' + currentHost : '';
-      renderHistory();
+    // ---------- Server list (left, click to switch) ----------
+    function renderServerList() {
+      const el = document.getElementById('server-list');
+      if (!servers.length) { el.innerHTML = '<div class="text-gray-500 p-3 text-center">Keine Server — oben „Servers"</div>'; return; }
+      el.innerHTML = servers.map(s => {
+        const sess = sessions.find(x => x.host === s.name && x.connected);
+        const active = s.name === currentHost;
+        return `<div onclick="selectHost('${escapeHtml(s.name)}')" class="p-2 rounded cursor-pointer flex items-center gap-2 ${active ? 'bg-gray-700 border border-blue-500' : 'hover:bg-gray-700'}">
+          <span class="${sess ? 'text-emerald-400' : 'text-gray-600'}" title="${sess ? 'verbunden' : 'getrennt'}">${sess ? '●' : '○'}</span>
+          <div class="min-w-0"><div class="font-semibold text-emerald-300 truncate">${escapeHtml(s.name)}</div>
+          <div class="text-gray-500 mono truncate" style="font-size:10px;">${escapeHtml(s.user)}@${escapeHtml(s.host)}</div></div>
+        </div>`;
+      }).join('');
     }
-    function onHostChange() {
-      currentHost = document.getElementById('term-host').value;
-      document.getElementById('history-host-label').textContent = currentHost ? '· ' + currentHost : '';
-      renderHistory();
-      updateConnectBtn();
+    function selectHost(name) {
+      currentHost = name;
+      document.getElementById('tb-host').textContent = name || '—';
+      const sess = sessions.find(s => s.host === name);
+      if (sess) { activateSession(sess.sid); return; }   // activateSession refreshes list + button
+      renderServerList(); updateConnectBtn();
     }
 
     // ---------- Pending commands ----------
@@ -380,12 +392,12 @@
       showToast('Neuer Befehl', `${cmd.host}: wartet auf Freigabe`);
     });
     function renderPending() {
-      const el = document.getElementById('pending-list');
-      el.innerHTML = pending.length ? pending.map(c => `
-        <div onclick="selectPending('${c.id}')" class="p-2 rounded cursor-pointer text-xs hover:bg-gray-700 border-l-2 border-amber-500 ${selected?.kind==='pending'&&selected.item.id===c.id?'bg-gray-700':''}">
-          <div class="text-emerald-300 font-semibold">${escapeHtml(c.host)}</div>
-          <div class="text-gray-300 truncate mono">${escapeHtml(c.command.substring(0,60))}</div>
-        </div>`).join('') : '<div class="text-xs text-gray-500 p-2 text-center">keine</div>';
+      const el = document.getElementById('pending-chips');
+      if (!el) return;
+      el.innerHTML = pending.map(c => `
+        <button onclick="selectPending('${c.id}')" title="${escapeHtml(c.command)}"
+          class="text-xs px-2 py-0.5 rounded bg-amber-600 hover:bg-amber-500 ${selected?.kind==='pending'&&selected.item.id===c.id?'ring-2 ring-white':''}">⚠ ${escapeHtml(c.host)}</button>
+      `).join('');
     }
     function selectPending(id) {
       const item = pending.find(c => c.id === id); if (!item) return;
@@ -499,11 +511,11 @@
     }
     function renderHistory() {
       const el = document.getElementById('history-list');
-      const items = history.filter(h => !currentHost || h.host === currentHost);
-      el.innerHTML = items.length ? items.map((h, i) => {
+      el.innerHTML = history.length ? history.map((h, idx) => {
         const color = h.status === 'sent' || h.status === 'auto' ? 'text-green-400' : h.status === 'rejected' ? 'text-red-400' : h.status === 'error' ? 'text-orange-400' : 'text-yellow-400';
         const code = (h.exitCode === 0 || h.exitCode > 0) ? ` <span class="text-gray-500">exit ${h.exitCode}</span>` : '';
-        return `<div onclick="selectHistory(${history.indexOf(h)})" class="p-1.5 rounded cursor-pointer hover:bg-gray-700 ${selected?.kind==='history'&&selected.item===h?'bg-gray-700 border border-gray-600':''}">
+        return `<div onclick="selectHistory(${idx})" class="p-1.5 rounded cursor-pointer hover:bg-gray-700 ${selected?.kind==='history'&&selected.item===h?'bg-gray-700 border border-gray-600':''}">
+          <div class="text-emerald-300 truncate" style="font-size:10px;text-transform:uppercase;letter-spacing:.04em;">${escapeHtml(h.host)}</div>
           <div><span class="${color}">[${h.status}]</span> <span class="text-gray-500">${h.time||''}</span>${code}</div>
           <div class="text-gray-300 mono truncate">${escapeHtml((h.command||'').substring(0,80))}</div>
         </div>`;
@@ -524,10 +536,9 @@
       document.getElementById('detail-status').textContent = '';
       updateDangerMode(); renderPending(); renderHistory();
     }
-    async function clearHistoryForHost() {
-      if (!currentHost) return;
-      await window.api.clearHistory(currentHost);
-      history = history.filter(h => h.host !== currentHost);
+    async function clearAllHistory() {
+      await window.api.clearHistory();
+      history = [];
       renderHistory();
     }
 
@@ -579,6 +590,7 @@
       if (res.success) { sess.connected = true; renderTabs(); term.focus(); }
       else { term.writeln('\x1b[31mConnect failed: ' + res.error + '\x1b[0m'); renderTabs(); }
       updateConnectBtn();
+      renderServerList();
     }
 
     function activateSession(sid) {
@@ -588,13 +600,11 @@
       if (sess) {
         sess.unread = false;
         currentHost = sess.host;
-        const dd = document.getElementById('term-host');
-        if ([...dd.options].some(o => o.value === sess.host)) dd.value = sess.host;
-        document.getElementById('history-host-label').textContent = '· ' + sess.host;
-        renderHistory();
+        document.getElementById('tb-host').textContent = sess.host;
         setTimeout(() => { try { sess.fit.fit(); if (sess.connected) window.api.termResize(sid, sess.term.cols, sess.term.rows); sess.term.focus(); } catch {} }, 0);
       }
       renderTabs();
+      renderServerList();
       updateConnectBtn();
     }
 
@@ -609,6 +619,7 @@
       if (activeSid === sid) { activeSid = null; if (sessions.length) activateSession(sessions[Math.max(0, i - 1)].sid); else renderTabs(); }
       else renderTabs();
       updateConnectBtn();
+      renderServerList();
     }
 
     function renderTabs() {
@@ -626,7 +637,7 @@
     }
 
     window.api.onTermData(({ sid, data }) => { const s = sessions.find(x => x.sid === sid); if (s) s.term.write(data); });
-    window.api.onTermClosed(({ sid }) => { const s = sessions.find(x => x.sid === sid); if (s) { s.connected = false; s.term.writeln('\r\n\x1b[2m[Verbindung geschlossen]\x1b[0m'); renderTabs(); updateConnectBtn(); } });
+    window.api.onTermClosed(({ sid }) => { const s = sessions.find(x => x.sid === sid); if (s) { s.connected = false; s.term.writeln('\r\n\x1b[2m[Verbindung geschlossen]\x1b[0m'); renderTabs(); updateConnectBtn(); renderServerList(); } });
     function termEcho(host, text) {
       const s = sessions.find(x => x.host === host && x.connected);
       if (s) { s.term.write(text.replace(/\n/g, '\r\n')); if (s.sid !== activeSid) { s.unread = true; renderTabs(); } }
@@ -659,8 +670,9 @@
     function updateConnectBtn() {
       const sess = sessions.find(s => s.host === currentHost && s.connected);
       const btn = document.getElementById('term-connect-btn');
-      if (sess) { btn.textContent = 'Terminal trennen'; btn.className = 'w-full text-sm px-3 py-1 bg-red-700 hover:bg-red-600 rounded'; }
-      else { btn.textContent = 'Terminal verbinden'; btn.className = 'w-full text-sm px-3 py-1 bg-emerald-700 hover:bg-emerald-600 rounded'; }
+      if (!btn) return;
+      if (sess) { btn.textContent = 'Terminal trennen'; btn.className = 'text-xs px-3 py-1 bg-red-700 hover:bg-red-600 rounded'; }
+      else { btn.textContent = 'Terminal verbinden'; btn.className = 'text-xs px-3 py-1 bg-emerald-700 hover:bg-emerald-600 rounded'; }
     }
 
     // ---------- MCP status ----------
@@ -710,6 +722,16 @@
         document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
       });
     }
+    // Draggable divider inside the left sidebar: server list (top) ↔ history (bottom).
+    function initLeftVSplit() {
+      const handle = document.getElementById('left-vsplit'), top = document.getElementById('server-list-panel');
+      handle.addEventListener('mousedown', (e) => {
+        const startY = e.clientY, startH = top.offsetHeight; document.body.style.userSelect = 'none';
+        const mv = (e) => { top.style.height = Math.max(60, startH + (e.clientY - startY)) + 'px'; };
+        const up = () => { document.body.style.userSelect = ''; document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); };
+        document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+      });
+    }
 
     // ---------- Init ----------
     document.getElementById('detail-cmd').addEventListener('input', updateDangerMode);
@@ -717,6 +739,7 @@
     window.addEventListener('resize', fitTerm);
     initResizeH('cmd-resize-handle', 'cmd-sidebar');
     initResizeV();
+    initLeftVSplit();
     generateAppIcon();
     loadMode();
     loadServers();
