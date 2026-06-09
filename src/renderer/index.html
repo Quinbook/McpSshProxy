@@ -457,15 +457,13 @@
         setButtons({ run: true, reject: true, send: false, cancel: false });
       }
     }
-    // Remove from the pending queue but keep the output on screen (no result confirmation).
+    // Done: output is in the terminal + history, so just advance to the next request for
+    // this server, or hide the panel entirely (no leftover "done" line).
     function finishPending(id) {
       pending = pending.filter(c => c.id !== id);
-      setButtons({ run: false, reject: false, send: false, cancel: false });
-      document.getElementById('detail-badge').innerHTML = '<span class="px-2 py-0.5 rounded-full text-xs bg-gray-600">done</span>';
       renderPending(); renderServerList();
-      // If more requests are queued for this server, advance to the next one.
       const next = pending.find(p => p.host === currentHost);
-      if (next) selectPending(next.id);
+      if (next) selectPending(next.id); else hideDetail();
     }
     async function cancelCurrent() {
       if (!selected) return;
