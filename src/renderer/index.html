@@ -11,6 +11,13 @@
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
   <style>
     body { font-family: 'Segoe UI', system-ui, sans-serif; }
+    /* Custom scrollbars — slim, rounded, theme-matching (not the default chunky HTML look) */
+    * { scrollbar-width: thin; scrollbar-color: #3f4856 transparent; }
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #3f4856; border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
+    ::-webkit-scrollbar-thumb:hover { background: #586273; background-clip: content-box; }
+    ::-webkit-scrollbar-corner { background: transparent; }
     .mono { font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; tab-size: 4; }
     .fade-in { animation: fadeIn 0.2s ease-in; }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
