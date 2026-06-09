@@ -60,7 +60,10 @@
       <div class="border-r border-gray-700 flex flex-col overflow-hidden" style="width:300px;min-width:200px;">
         <div class="p-3 border-b border-gray-700 flex justify-between items-center">
           <h2 class="text-sm font-semibold text-gray-400">Configured Servers</h2>
-          <button onclick="newServer()" class="text-xs px-2 py-0.5 bg-blue-600 hover:bg-blue-500 rounded">+ Add</button>
+          <div class="flex gap-1">
+            <button onclick="openPuttyModal()" class="text-xs px-2 py-0.5 bg-purple-600 hover:bg-purple-500 rounded" title="Import saved sessions from PuTTY">PuTTY</button>
+            <button onclick="newServer()" class="text-xs px-2 py-0.5 bg-blue-600 hover:bg-blue-500 rounded">+ Add</button>
+          </div>
         </div>
         <div id="servers-list" class="flex-1 overflow-y-auto p-2 space-y-1 text-xs">
           <div class="text-gray-500 p-3 text-center">No servers yet</div>
@@ -96,7 +99,7 @@
             </select>
           </div>
           <div id="field-keypath" class="col-span-2">
-            <label class="text-xs text-gray-400">Private Key Path</label>
+            <label class="text-xs text-gray-400">Private Key Path <span class="text-gray-600">(OpenSSH, PEM oder PuTTY .ppk — wird automatisch erkannt)</span></label>
             <div class="flex gap-2">
               <input id="srv-keypath" class="flex-1 bg-gray-700 text-sm rounded px-2 py-1.5 border border-gray-600 focus:border-blue-500 outline-none mono" placeholder="C:\Users\you\.ssh\id_ed25519" />
               <button type="button" onclick="browseKeyPath()" class="text-sm px-3 py-1.5 bg-gray-600 hover:bg-gray-500 rounded whitespace-nowrap">Durchsuchen…</button>
@@ -195,6 +198,21 @@
     </div>
   </div>
 
+  <!-- PuTTY import modal -->
+  <div id="putty-modal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+    <div class="bg-gray-800 rounded-lg border border-gray-700 w-[600px] max-h-[80vh] flex flex-col">
+      <div class="p-4 border-b border-gray-700 flex justify-between items-center">
+        <h2 class="text-base font-semibold">Import from PuTTY</h2>
+        <button onclick="closePuttyModal()" class="text-gray-400 hover:text-white text-lg leading-none">✕</button>
+      </div>
+      <div id="putty-list" class="flex-1 overflow-y-auto p-3 space-y-1 text-sm"></div>
+      <div class="p-3 border-t border-gray-700 flex justify-between items-center">
+        <span id="putty-status" class="text-xs text-gray-400"></span>
+        <button onclick="importAllPutty()" id="putty-import-all" class="text-sm px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded">Import all new</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     // State
     let commands = [];
@@ -243,6 +261,70 @@
     async function browseKeyPath() {
       const p = await window.api.pickKeyFile();
       if (p) document.getElementById('srv-keypath').value = p;
+    }
+
+    // --- PuTTY import ---
+    let puttySessions = [];
+    async function openPuttyModal() {
+      document.getElementById('putty-modal').classList.remove('hidden');
+      document.getElementById('putty-status').textContent = '';
+      const listEl = document.getElementById('putty-list');
+      listEl.innerHTML = '<div class="text-gray-500 p-3 text-center">Loading…</div>';
+      puttySessions = await window.api.listPuttySessions();
+      if (!puttySessions.length) {
+        listEl.innerHTML = '<div class="text-gray-500 p-3 text-center">No PuTTY sessions found in the registry.</div>';
+        return;
+      }
+      renderPuttyList();
+    }
+    function closePuttyModal() { document.getElementById('putty-modal').classList.add('hidden'); }
+
+    function renderPuttyList() {
+      const existing = new Set(servers.map(s => s.name.toLowerCase()));
+      document.getElementById('putty-list').innerHTML = puttySessions.map((s, i) => {
+        const dup = existing.has(s.name.toLowerCase());
+        return `<div class="p-2 rounded bg-gray-900 flex items-center justify-between gap-3">
+          <div class="min-w-0">
+            <div class="font-semibold text-emerald-300 truncate">${escapeHtml(s.name)} ${dup ? '<span class="text-xs text-gray-500">(exists)</span>' : ''}</div>
+            <div class="text-gray-500 mono text-xs truncate">${escapeHtml(s.user || '?')}@${escapeHtml(s.host)}:${s.port} · ${s.authType}${s.keyPath ? ' · ' + escapeHtml(s.keyPath) : ''}</div>
+          </div>
+          <button onclick="loadPuttyToForm(${i})" class="text-xs px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded whitespace-nowrap">Edit &amp; Save</button>
+        </div>`;
+      }).join('');
+    }
+
+    function loadPuttyToForm(i) {
+      const s = puttySessions[i];
+      closePuttyModal();
+      newServer();
+      document.getElementById('srv-name').value = s.name;
+      document.getElementById('srv-user').value = s.user || '';
+      document.getElementById('srv-host').value = s.host;
+      document.getElementById('srv-port').value = s.port;
+      document.getElementById('srv-auth').value = s.authType;
+      document.getElementById('srv-keypath').value = s.keyPath || '';
+      updateAuthFields();
+      if (!s.user) {
+        document.getElementById('srv-status').textContent = 'PuTTY stored no username — please fill it in.';
+        document.getElementById('srv-status').className = 'text-sm text-yellow-400 self-center ml-2';
+      }
+    }
+
+    async function importAllPutty() {
+      const existing = new Set(servers.map(s => s.name.toLowerCase()));
+      let added = 0, skipped = 0;
+      for (const s of puttySessions) {
+        if (existing.has(s.name.toLowerCase()) || !s.user) { skipped++; continue; }
+        const res = await window.api.saveServer({
+          name: s.name, user: s.user, host: s.host, port: s.port,
+          authType: s.authType, keyPath: s.keyPath || '',
+        });
+        if (res.success) added++; else skipped++;
+      }
+      document.getElementById('putty-status').textContent =
+        `Imported ${added}, skipped ${skipped} (existing or missing username).`;
+      await loadServers();
+      renderPuttyList();
     }
 
     function updateAuthFields() {

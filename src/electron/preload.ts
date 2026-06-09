@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld('api', {
   deleteServer: (id: string) => ipcRenderer.invoke('delete-server', { id }),
   testServer: (id: string) => ipcRenderer.invoke('test-server', { id }),
   pickKeyFile: () => ipcRenderer.invoke('pick-key-file'),
+  listPuttySessions: () => ipcRenderer.invoke('list-putty-sessions'),
   onOpenServers: (callback: () => void) => {
     ipcRenderer.on('open-servers', () => callback());
   },

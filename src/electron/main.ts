@@ -2,10 +2,12 @@ import { app, BrowserWindow, ipcMain, Notification, safeStorage, nativeImage, di
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
+import { execFile } from 'child_process';
 import { WebSocketServer, WebSocket } from 'ws';
 import * as http from 'http';
 import Store from 'electron-store';
 import { Client as SshClient, ConnectConfig } from 'ssh2';
+import { parseFromFile as parsePpkFile } from 'ppk-to-openssh';
 
 interface ServerConfig {
   id: string;
@@ -127,7 +129,13 @@ function createWindow() {
 }
 
 // --- SSH execution ---
-function buildConnectConfig(server: ServerConfig): ConnectConfig {
+function isPuttyKey(raw: Buffer): boolean {
+  return raw.toString('utf8', 0, 32).startsWith('PuTTY-User-Key-File');
+}
+
+// ssh2 only reads OpenSSH/PEM/PKCS#8 keys natively. PuTTY .ppk (v2 and v3/Argon2) is
+// detected and converted on the fly so the user never has to convert keys manually.
+async function buildConnectConfig(server: ServerConfig): Promise<ConnectConfig> {
   const cfg: ConnectConfig = {
     host: server.host,
     port: server.port || 22,
@@ -140,9 +148,19 @@ function buildConnectConfig(server: ServerConfig): ConnectConfig {
     cfg.password = decryptSecret(server.passwordEnc);
   } else if (server.authType === 'key') {
     if (!server.keyPath) throw new Error('No private key path configured for this server.');
-    cfg.privateKey = fs.readFileSync(server.keyPath);
+    const raw = fs.readFileSync(server.keyPath);
     const passphrase = decryptSecret(server.passphraseEnc);
-    if (passphrase) cfg.passphrase = passphrase;
+    if (isPuttyKey(raw)) {
+      try {
+        const { privateKey } = await parsePpkFile(server.keyPath, passphrase || undefined);
+        cfg.privateKey = privateKey; // converted key is unencrypted OpenSSH PEM
+      } catch (e: any) {
+        throw new Error(`Could not read PuTTY key (.ppk): ${e.message}`);
+      }
+    } else {
+      cfg.privateKey = raw; // OpenSSH / PEM / PKCS#8 — ssh2 handles these directly
+      if (passphrase) cfg.passphrase = passphrase;
+    }
   } else if (server.authType === 'agent') {
     cfg.agent = process.env.SSH_AUTH_SOCK ||
       (process.platform === 'win32' ? '\\\\.\\pipe\\openssh-ssh-agent' : '');
@@ -152,14 +170,10 @@ function buildConnectConfig(server: ServerConfig): ConnectConfig {
   return cfg;
 }
 
-function executeCommand(server: ServerConfig, command: string, id: string): Promise<any> {
+async function executeCommand(server: ServerConfig, command: string, id: string): Promise<any> {
+  const cfg = await buildConnectConfig(server);
   return new Promise((resolve, reject) => {
-    let conn: SshClient;
-    try {
-      conn = new SshClient();
-    } catch (e: any) {
-      return reject(e);
-    }
+    const conn = new SshClient();
 
     let stdout = '';
     let stderr = '';
@@ -191,7 +205,7 @@ function executeCommand(server: ServerConfig, command: string, id: string): Prom
 
     try {
       runningConns.set(id, conn);
-      conn.connect(buildConnectConfig(server));
+      conn.connect(cfg);
     } catch (e: any) {
       done(() => reject(e));
     }
@@ -410,12 +424,74 @@ ipcMain.handle('test-server', async (_event, { id }) => {
   }
 });
 
+// --- PuTTY session import (Windows registry) ---
+function decodePuttyName(raw: string): string {
+  try { return decodeURIComponent(raw); } catch { return raw; }
+}
+
+function parsePuttyRegDump(out: string): any[] {
+  const sessions: any[] = [];
+  for (const block of out.split(/\r?\n\r?\n/)) {
+    const lines = block.split(/\r?\n/);
+    const header = (lines[0] || '').trim();
+    if (!/\\Sessions\\/.test(header)) continue;
+    const name = decodePuttyName(header.substring(header.lastIndexOf('\\') + 1));
+
+    const vals: Record<string, string> = {};
+    for (const line of lines.slice(1)) {
+      const m = line.trim().match(/^(\S+)\s+REG_\w+\s+(.*)$/);
+      if (m) vals[m[1]] = m[2];
+    }
+
+    const host = vals['HostName'] || '';
+    if (!host) continue; // skip "Default Settings" and keyless containers
+
+    let port = 22;
+    if (vals['PortNumber']) {
+      port = vals['PortNumber'].startsWith('0x')
+        ? parseInt(vals['PortNumber'], 16)
+        : parseInt(vals['PortNumber'], 10);
+    }
+    const keyPath = vals['PublicKeyFile'] || '';
+    sessions.push({
+      name,
+      host,
+      port: port || 22,
+      user: vals['UserName'] || '',
+      keyPath,
+      authType: keyPath ? 'key' : 'password',
+    });
+  }
+  return sessions;
+}
+
+function listPuttySessions(): Promise<any[]> {
+  return new Promise((resolve) => {
+    if (process.platform !== 'win32') return resolve([]);
+    execFile(
+      'reg',
+      ['query', 'HKCU\\Software\\SimonTatham\\PuTTY\\Sessions', '/s'],
+      { maxBuffer: 8 * 1024 * 1024, windowsHide: true },
+      (err, stdout) => {
+        if (err || !stdout) return resolve([]);
+        try { resolve(parsePuttyRegDump(stdout)); } catch { resolve([]); }
+      }
+    );
+  });
+}
+
+ipcMain.handle('list-putty-sessions', () => listPuttySessions());
+
 ipcMain.handle('pick-key-file', async () => {
   const sshDir = path.join(os.homedir(), '.ssh');
   const result = await dialog.showOpenDialog(mainWindow!, {
     title: 'Select SSH private key',
     defaultPath: fs.existsSync(sshDir) ? sshDir : os.homedir(),
     properties: ['openFile', 'showHiddenFiles'],
+    filters: [
+      { name: 'SSH keys (OpenSSH, PEM, PuTTY .ppk)', extensions: ['ppk', 'pem', 'key', 'openssh', 'rsa'] },
+      { name: 'All files', extensions: ['*'] },
+    ],
   });
   if (result.canceled || result.filePaths.length === 0) return '';
   return result.filePaths[0];
