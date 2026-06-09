@@ -6,38 +6,32 @@
   <link rel="icon" type="image/svg+xml" href="icon.svg" />
   <title>MCP SSH Proxy</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
   <style>
     body { font-family: 'Segoe UI', system-ui, sans-serif; }
     .mono { font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; tab-size: 4; }
     .fade-in { animation: fadeIn 0.2s ease-in; }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
-    .resize-handle { width: 4px; cursor: col-resize; background: transparent; transition: background 0.15s; flex-shrink: 0; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+    .resize-handle { width: 4px; cursor: col-resize; background: transparent; flex-shrink: 0; }
     .resize-handle:hover, .resize-handle.active { background: #3b82f6; }
+    .vsplit { height: 5px; cursor: row-resize; background: #111827; }
+    .vsplit:hover { background: #3b82f6; }
     .toast {
       position: fixed; top: 12px; right: 12px; z-index: 9999;
       background: #1e40af; color: white; padding: 12px 20px; border-radius: 8px;
       box-shadow: 0 4px 20px rgba(0,0,0,0.5); font-size: 13px; max-width: 350px;
-      animation: toastIn 0.3s ease-out; cursor: pointer;
-    }
-    .toast .toast-title { font-weight: 600; margin-bottom: 2px; }
-    .toast .toast-body { opacity: 0.85; font-size: 12px; }
-    @keyframes toastIn { from { opacity: 0; transform: translateX(40px); } to { opacity: 1; transform: translateX(0); } }
-    @keyframes toastOut { from { opacity: 1; } to { opacity: 0; transform: translateX(40px); } }
-
-    /* Danger-Mode: visuelle Warnung bei destruktiven Shell-Befehlen */
-    body.danger-mode { box-shadow: inset 0 0 0 4px #dc2626; animation: dangerPulse 1.6s ease-in-out infinite; }
-    @keyframes dangerPulse {
-      0%, 100% { box-shadow: inset 0 0 0 4px #dc2626; }
-      50%      { box-shadow: inset 0 0 0 6px #ef4444; }
+      animation: fadeIn 0.3s ease-out; cursor: pointer;
     }
     body.danger-mode header { background: #7f1d1d !important; border-bottom-color: #dc2626 !important; }
-    body.danger-mode .cmd-editor { background: #1a0606 !important; box-shadow: inset 0 0 0 2px #dc2626; }
     #danger-banner { display: none; }
     body.danger-mode #danger-banner {
       display: inline-flex; align-items: center; gap: 4px; background: #dc2626; color: white;
-      font-weight: 700; font-size: 11px; padding: 2px 8px; border-radius: 9999px;
-      letter-spacing: 0.5px; animation: dangerPulse 1.6s ease-in-out infinite;
+      font-weight: 700; font-size: 11px; padding: 2px 8px; border-radius: 9999px; letter-spacing: 0.5px;
     }
+    #terminal { width: 100%; height: 100%; }
+    .xterm { padding: 6px; }
   </style>
 </head>
 <body class="h-full bg-gray-900 text-gray-100">
@@ -50,12 +44,14 @@
         <span id="danger-banner" title="Destruktiver Shell-Befehl erkannt">⚠ DESTRUKTIV <span id="danger-keyword"></span></span>
         <span id="mcp-status" class="text-xs px-2 py-0.5 rounded-full bg-yellow-600">MCP: connecting...</span>
       </div>
-      <div class="flex gap-2">
+      <div class="flex items-center gap-2">
+        <span class="text-xs text-gray-400">Modus:</span>
+        <button onclick="toggleMode()" id="mode-toggle" class="text-xs px-3 py-1 rounded font-medium bg-amber-600 hover:bg-amber-500">…</button>
         <button onclick="toggleServers()" id="servers-btn" class="text-sm px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded">Servers</button>
       </div>
     </header>
 
-    <!-- Servers Panel (hidden by default) -->
+    <!-- Servers Panel -->
     <div id="servers-panel" class="hidden flex-1 flex overflow-hidden bg-gray-900">
       <div class="border-r border-gray-700 flex flex-col overflow-hidden" style="width:300px;min-width:200px;">
         <div class="p-3 border-b border-gray-700 flex justify-between items-center">
@@ -65,11 +61,8 @@
             <button onclick="newServer()" class="text-xs px-2 py-0.5 bg-blue-600 hover:bg-blue-500 rounded">+ Add</button>
           </div>
         </div>
-        <div id="servers-list" class="flex-1 overflow-y-auto p-2 space-y-1 text-xs">
-          <div class="text-gray-500 p-3 text-center">No servers yet</div>
-        </div>
+        <div id="servers-list" class="flex-1 overflow-y-auto p-2 space-y-1 text-xs"></div>
       </div>
-      <!-- Server Form -->
       <div class="flex-1 overflow-auto p-6">
         <h2 id="server-form-title" class="text-base font-semibold mb-4">Add Server</h2>
         <input type="hidden" id="srv-id" />
@@ -80,7 +73,7 @@
           </div>
           <div>
             <label class="text-xs text-gray-400">User</label>
-            <input id="srv-user" class="w-full bg-gray-700 text-sm rounded px-2 py-1.5 border border-gray-600 focus:border-blue-500 outline-none" placeholder="z.B. wz" />
+            <input id="srv-user" class="w-full bg-gray-700 text-sm rounded px-2 py-1.5 border border-gray-600 focus:border-blue-500 outline-none" placeholder="z.B. root" />
           </div>
           <div>
             <label class="text-xs text-gray-400">Host / IP</label>
@@ -90,7 +83,7 @@
             <label class="text-xs text-gray-400">Port</label>
             <input id="srv-port" type="number" value="22" class="w-full bg-gray-700 text-sm rounded px-2 py-1.5 border border-gray-600 focus:border-blue-500 outline-none" />
           </div>
-          <div class="col-span-2">
+          <div>
             <label class="text-xs text-gray-400">Authentication</label>
             <select id="srv-auth" onchange="updateAuthFields()" class="w-full bg-gray-700 text-sm rounded px-2 py-1.5 border border-gray-600 focus:border-blue-500 outline-none">
               <option value="key">Private Key</option>
@@ -98,8 +91,16 @@
               <option value="agent">SSH Agent</option>
             </select>
           </div>
+          <div>
+            <label class="text-xs text-gray-400">Bestätigung <span class="text-gray-600">(überschreibt global)</span></label>
+            <select id="srv-confirm" class="w-full bg-gray-700 text-sm rounded px-2 py-1.5 border border-gray-600 focus:border-blue-500 outline-none">
+              <option value="global">Global folgen</option>
+              <option value="always">Immer bestätigen</option>
+              <option value="auto">Auto-run (nie fragen)</option>
+            </select>
+          </div>
           <div id="field-keypath" class="col-span-2">
-            <label class="text-xs text-gray-400">Private Key Path <span class="text-gray-600">(OpenSSH, PEM oder PuTTY .ppk — wird automatisch erkannt)</span></label>
+            <label class="text-xs text-gray-400">Private Key Path <span class="text-gray-600">(OpenSSH, PEM oder PuTTY .ppk — automatisch erkannt)</span></label>
             <div class="flex gap-2">
               <input id="srv-keypath" class="flex-1 bg-gray-700 text-sm rounded px-2 py-1.5 border border-gray-600 focus:border-blue-500 outline-none mono" placeholder="C:\Users\you\.ssh\id_ed25519" />
               <button type="button" onclick="browseKeyPath()" class="text-sm px-3 py-1.5 bg-gray-600 hover:bg-gray-500 rounded whitespace-nowrap">Durchsuchen…</button>
@@ -116,83 +117,75 @@
         </div>
         <div class="flex gap-2 mt-5">
           <button onclick="saveServer()" class="text-sm px-4 py-1.5 bg-blue-600 hover:bg-blue-500 rounded">Save</button>
-          <button onclick="testCurrentServer()" id="srv-test-btn" class="text-sm px-4 py-1.5 bg-gray-700 hover:bg-gray-600 rounded">Test Connection</button>
+          <button onclick="testCurrentServer()" class="text-sm px-4 py-1.5 bg-gray-700 hover:bg-gray-600 rounded">Test Connection</button>
           <button onclick="deleteCurrentServer()" id="srv-delete-btn" class="hidden text-sm px-4 py-1.5 bg-red-700 hover:bg-red-600 rounded">Delete</button>
           <span id="srv-status" class="text-sm text-gray-400 self-center ml-2"></span>
         </div>
-        <p class="text-xs text-gray-500 mt-4 max-w-2xl">
-          Secrets are encrypted at rest with the OS keystore (Windows DPAPI) and never returned to the UI in clear text.
-          Leave a password/passphrase field blank when editing to keep the stored value.
-        </p>
+        <p class="text-xs text-gray-500 mt-4 max-w-2xl">Secrets are encrypted at rest with the OS keystore (Windows DPAPI) and never returned to the UI in clear text. Leave a secret field blank when editing to keep the stored value.</p>
       </div>
     </div>
 
     <!-- Main Content -->
     <div id="main-content" class="flex-1 flex overflow-hidden">
-      <!-- Command Queue (left sidebar) -->
-      <div id="cmd-sidebar" class="bg-gray-800 border-r border-gray-700 flex flex-col" style="width:280px;min-width:160px;">
-        <div class="p-3 border-b border-gray-700">
-          <h2 class="text-sm font-semibold text-gray-400">Pending Commands</h2>
+      <!-- Left sidebar -->
+      <div id="cmd-sidebar" class="bg-gray-800 border-r border-gray-700 flex flex-col" style="width:300px;min-width:180px;">
+        <div class="p-2 border-b border-gray-700 space-y-2">
+          <select id="term-host" onchange="onHostChange()" class="w-full bg-gray-700 text-sm rounded px-2 py-1 border border-gray-600 outline-none"></select>
+          <button onclick="connectTerminal()" id="term-connect-btn" class="w-full text-sm px-3 py-1 bg-emerald-700 hover:bg-emerald-600 rounded">Terminal verbinden</button>
         </div>
-        <div id="cmd-list" class="flex-1 overflow-y-auto p-2 space-y-1">
-          <div class="text-xs text-gray-500 p-3 text-center">No pending commands</div>
+        <!-- Pending -->
+        <div class="px-3 pt-2 pb-1 text-xs font-semibold text-amber-300">Pending (Freigabe)</div>
+        <div id="pending-list" class="overflow-y-auto px-2 space-y-1" style="max-height:32%;">
+          <div class="text-xs text-gray-500 p-2 text-center">keine</div>
         </div>
-        <div class="p-3 border-t border-gray-700 flex flex-col min-h-0" style="max-height:40%;">
-          <h2 class="text-sm font-semibold text-gray-400 mb-1">History</h2>
-          <div id="history-list" class="flex-1 overflow-y-auto space-y-1 text-xs"></div>
+        <!-- History -->
+        <div class="px-3 pt-2 pb-1 flex justify-between items-center border-t border-gray-700">
+          <span class="text-xs font-semibold text-gray-400">Verlauf <span id="history-host-label" class="text-gray-600"></span></span>
+          <button onclick="clearHistoryForHost()" class="text-xs text-gray-500 hover:text-red-400" title="Verlauf dieses Servers löschen">clear</button>
         </div>
+        <div id="history-list" class="flex-1 overflow-y-auto px-2 space-y-1 text-xs"></div>
       </div>
       <div class="resize-handle" id="cmd-resize-handle"></div>
 
-      <!-- Command Detail (main area) -->
+      <!-- Middle: detail (top) + terminal (bottom) -->
       <div class="flex-1 flex flex-col overflow-hidden">
-        <div id="empty-state" class="flex-1 flex items-center justify-center text-gray-600 text-sm">
-          <div class="text-center">
-            <div class="text-4xl mb-2">›_</div>
-            <div>Waiting for commands from Claude…</div>
-            <div class="mt-1 text-gray-700" id="empty-hint"></div>
+        <!-- Detail / approval -->
+        <div id="detail-panel" class="flex flex-col overflow-hidden border-b border-gray-700" style="height:42%;">
+          <div id="detail-empty" class="flex-1 flex items-center justify-center text-gray-600 text-sm text-center px-4">
+            <div>
+              <div class="text-3xl mb-1">›_</div>
+              <div id="detail-hint">Befehle von Claude erscheinen hier zur Freigabe.<br/>Wähle links einen Server und verbinde das Terminal.</div>
+            </div>
+          </div>
+          <div id="detail-body" class="hidden flex-1 flex flex-col overflow-hidden">
+            <div class="px-4 py-2 bg-gray-800 border-b border-gray-700 flex items-center gap-3">
+              <span class="text-xs text-gray-400">Host:</span>
+              <span id="detail-host" class="text-sm font-semibold text-emerald-300 mono"></span>
+              <span id="detail-badge" class="ml-2"></span>
+              <span id="detail-id" class="text-gray-600 text-xs ml-auto"></span>
+            </div>
+            <div id="detail-desc" class="px-4 py-1.5 bg-gray-800/60 border-b border-gray-700 text-sm text-blue-300 hidden"></div>
+            <div class="px-4 py-1 bg-gray-800 text-xs text-gray-400 border-b border-gray-700">Command <span id="detail-editable-hint" class="text-gray-600"></span></div>
+            <textarea id="detail-cmd" class="mono w-full bg-gray-900 text-green-400 px-4 py-2 outline-none resize-none" rows="2" spellcheck="false"></textarea>
+            <div class="flex gap-2 px-4 py-2 bg-gray-800 border-b border-gray-700">
+              <button id="run-btn" onclick="runCurrent()" class="px-4 py-1.5 bg-green-600 hover:bg-green-500 rounded text-sm font-medium">Run</button>
+              <button id="reject-btn" onclick="rejectCurrent()" class="px-4 py-1.5 bg-red-600 hover:bg-red-500 rounded text-sm font-medium">Reject</button>
+              <button id="send-btn" onclick="sendCurrent()" class="hidden px-4 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-sm font-medium">Send to Claude</button>
+              <button id="cancel-btn" onclick="cancelCurrent()" class="hidden px-4 py-1.5 bg-orange-600 hover:bg-orange-500 rounded text-sm font-medium">Cancel</button>
+              <span id="detail-status" class="text-sm text-gray-400 self-center ml-2"></span>
+            </div>
+            <pre id="detail-output" class="flex-1 overflow-auto px-4 py-2 text-xs mono whitespace-pre-wrap text-gray-200 bg-gray-900"></pre>
           </div>
         </div>
-
-        <div id="cmd-detail" class="hidden flex-1 flex flex-col overflow-hidden">
-          <!-- Host + description -->
-          <div class="px-4 py-2 bg-gray-800 border-b border-gray-700 flex items-center gap-3">
-            <span class="text-xs text-gray-400">Host:</span>
-            <span id="cmd-host" class="text-sm font-semibold text-emerald-300 mono"></span>
-            <span id="cmd-id" class="text-gray-600 text-xs ml-auto"></span>
+        <div class="vsplit" id="vsplit-handle"></div>
+        <!-- Terminal -->
+        <div class="flex-1 flex flex-col overflow-hidden bg-black">
+          <div class="px-3 py-1 bg-gray-800 border-b border-gray-700 flex items-center gap-2 text-xs">
+            <span class="text-gray-400">Terminal:</span>
+            <span id="term-label" class="text-emerald-300 mono">— nicht verbunden —</span>
+            <button onclick="disconnectTerminal()" id="term-disc-btn" class="hidden ml-auto px-2 py-0.5 bg-gray-700 hover:bg-gray-600 rounded">Trennen</button>
           </div>
-          <div id="cmd-description" class="px-4 py-2 bg-gray-800/60 border-b border-gray-700 text-sm text-blue-300 hidden"></div>
-
-          <!-- Command editor -->
-          <div class="flex-shrink-0 border-b border-gray-700">
-            <div class="px-4 py-1 bg-gray-800 text-xs text-gray-400">Command (editable)</div>
-            <textarea id="cmd-editor" class="cmd-editor mono w-full bg-gray-900 text-green-400 p-4 outline-none resize-y" rows="4" spellcheck="false"></textarea>
-          </div>
-
-          <!-- Action buttons -->
-          <div class="flex gap-2 px-4 py-2 bg-gray-800 border-b border-gray-700">
-            <button id="run-btn" onclick="approveCurrent()" class="px-4 py-1.5 bg-green-600 hover:bg-green-500 rounded text-sm font-medium">Run</button>
-            <button id="reject-btn" onclick="rejectCurrent()" class="px-4 py-1.5 bg-red-600 hover:bg-red-500 rounded text-sm font-medium">Reject</button>
-            <button id="cmd-cancel-btn" onclick="cancelCurrent()" class="hidden px-4 py-1.5 bg-orange-600 hover:bg-orange-500 rounded text-sm font-medium">Cancel</button>
-            <span id="cmd-status" class="text-sm text-gray-400 self-center ml-2"></span>
-          </div>
-
-          <!-- Output -->
-          <div id="output-area" class="flex-1 overflow-auto hidden flex flex-col">
-            <div class="px-4 py-2 bg-gray-800 border-b border-gray-700 flex justify-between items-center sticky top-0">
-              <span class="text-sm text-gray-400">Output <span id="exit-badge" class="ml-2"></span></span>
-              <div class="flex gap-2">
-                <button onclick="sendOutput()" class="px-3 py-1 bg-blue-600 hover:bg-blue-500 rounded text-sm">Send to Claude</button>
-              </div>
-            </div>
-            <pre id="output-content" class="flex-1 overflow-auto p-4 text-xs mono whitespace-pre-wrap text-gray-200"></pre>
-          </div>
-
-          <!-- Error -->
-          <div id="error-area" class="hidden px-4 py-3 bg-red-900/30 border-t border-red-700">
-            <p class="text-sm text-red-300" id="error-message"></p>
-            <button onclick="sendErrorToClaude()" class="mt-2 px-3 py-1 bg-red-700 hover:bg-red-600 rounded text-sm">Send Error to Claude</button>
-          </div>
+          <div id="terminal" class="flex-1"></div>
         </div>
       </div>
     </div>
@@ -208,153 +201,76 @@
       <div id="putty-list" class="flex-1 overflow-y-auto p-3 space-y-1 text-sm"></div>
       <div class="p-3 border-t border-gray-700 flex justify-between items-center">
         <span id="putty-status" class="text-xs text-gray-400"></span>
-        <button onclick="importAllPutty()" id="putty-import-all" class="text-sm px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded">Import all new</button>
+        <button onclick="importAllPutty()" class="text-sm px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded">Import all new</button>
       </div>
     </div>
   </div>
 
   <script>
-    // State
-    let commands = [];
-    let current = null;
-    let currentOutput = null; // { host, code, signal, stdout, stderr }
-    let currentError = null;
-    let history = [];
-
-    // --- Servers ---
+    // ---------- State ----------
     let servers = [];
-    let serversVisible = false;
-    let editingId = null;
+    let pending = [];          // commands awaiting approval
+    let history = [];          // persisted entries (all hosts)
+    let selected = null;       // { kind:'pending'|'history', item }
+    let currentHost = '';      // host selected in the dropdown (drives history + terminal)
+    let confirmMode = 'confirm-each';
 
-    function showServers() {
-      serversVisible = true;
-      document.getElementById('servers-panel').classList.remove('hidden');
-      document.getElementById('main-content').classList.add('hidden');
-      document.getElementById('servers-btn').classList.add('bg-blue-600');
-      document.getElementById('servers-btn').classList.remove('bg-gray-700');
-      loadServers();
+    // ---------- Mode ----------
+    async function loadMode() {
+      confirmMode = await window.api.getConfirmMode();
+      renderMode();
     }
-    function hideServers() {
-      serversVisible = false;
-      document.getElementById('servers-panel').classList.add('hidden');
-      document.getElementById('main-content').classList.remove('hidden');
-      document.getElementById('servers-btn').classList.remove('bg-blue-600');
-      document.getElementById('servers-btn').classList.add('bg-gray-700');
+    function renderMode() {
+      const btn = document.getElementById('mode-toggle');
+      if (confirmMode === 'confirm-each') {
+        btn.textContent = 'Jeden Befehl bestätigen';
+        btn.className = 'text-xs px-3 py-1 rounded font-medium bg-amber-600 hover:bg-amber-500';
+      } else {
+        btn.textContent = 'Auto-run (nur auflisten)';
+        btn.className = 'text-xs px-3 py-1 rounded font-medium bg-red-700 hover:bg-red-600';
+      }
     }
+    async function toggleMode() {
+      confirmMode = confirmMode === 'confirm-each' ? 'auto-list' : 'confirm-each';
+      await window.api.setConfirmMode(confirmMode);
+      renderMode();
+    }
+
+    // ---------- Servers panel ----------
+    let serversVisible = false, editingId = null;
+    function showServers() { serversVisible = true; document.getElementById('servers-panel').classList.remove('hidden'); document.getElementById('main-content').classList.add('hidden'); document.getElementById('servers-btn').classList.add('bg-blue-600'); loadServers(); }
+    function hideServers() { serversVisible = false; document.getElementById('servers-panel').classList.add('hidden'); document.getElementById('main-content').classList.remove('hidden'); document.getElementById('servers-btn').classList.remove('bg-blue-600'); fitTerm(); }
     function toggleServers() { serversVisible ? hideServers() : showServers(); }
 
     async function loadServers() {
       servers = await window.api.getServers();
       const list = document.getElementById('servers-list');
-      if (servers.length === 0) {
-        list.innerHTML = '<div class="text-gray-500 p-3 text-center">No servers yet</div>';
-      } else {
-        list.innerHTML = servers.map(s => `
-          <div onclick="editServer('${s.id}')" class="p-2 rounded cursor-pointer hover:bg-gray-700 ${editingId === s.id ? 'bg-gray-700 border border-blue-500' : ''}">
-            <div class="font-semibold text-emerald-300">${escapeHtml(s.name)}</div>
-            <div class="text-gray-500 mono">${escapeHtml(s.user)}@${escapeHtml(s.host)}:${s.port} · ${s.authType}</div>
-          </div>`).join('');
-      }
-      updateEmptyHint();
+      list.innerHTML = servers.length ? servers.map(s => `
+        <div onclick="editServer('${s.id}')" class="p-2 rounded cursor-pointer hover:bg-gray-700 ${editingId === s.id ? 'bg-gray-700 border border-blue-500' : ''}">
+          <div class="font-semibold text-emerald-300">${escapeHtml(s.name)}</div>
+          <div class="text-gray-500 mono">${escapeHtml(s.user)}@${escapeHtml(s.host)}:${s.port} · ${s.authType}${s.confirmPolicy && s.confirmPolicy !== 'global' ? ' · ' + s.confirmPolicy : ''}</div>
+        </div>`).join('') : '<div class="text-gray-500 p-3 text-center">No servers yet</div>';
+      refreshHostDropdown();
     }
-
-    async function browseKeyPath() {
-      const p = await window.api.pickKeyFile();
-      if (p) document.getElementById('srv-keypath').value = p;
-    }
-
-    // --- PuTTY import ---
-    let puttySessions = [];
-    async function openPuttyModal() {
-      document.getElementById('putty-modal').classList.remove('hidden');
-      document.getElementById('putty-status').textContent = '';
-      const listEl = document.getElementById('putty-list');
-      listEl.innerHTML = '<div class="text-gray-500 p-3 text-center">Loading…</div>';
-      puttySessions = await window.api.listPuttySessions();
-      if (!puttySessions.length) {
-        listEl.innerHTML = '<div class="text-gray-500 p-3 text-center">No PuTTY sessions found in the registry.</div>';
-        return;
-      }
-      renderPuttyList();
-    }
-    function closePuttyModal() { document.getElementById('putty-modal').classList.add('hidden'); }
-
-    function renderPuttyList() {
-      const existing = new Set(servers.map(s => s.name.toLowerCase()));
-      document.getElementById('putty-list').innerHTML = puttySessions.map((s, i) => {
-        const dup = existing.has(s.name.toLowerCase());
-        return `<div class="p-2 rounded bg-gray-900 flex items-center justify-between gap-3">
-          <div class="min-w-0">
-            <div class="font-semibold text-emerald-300 truncate">${escapeHtml(s.name)} ${dup ? '<span class="text-xs text-gray-500">(exists)</span>' : ''}</div>
-            <div class="text-gray-500 mono text-xs truncate">${escapeHtml(s.user || '?')}@${escapeHtml(s.host)}:${s.port} · ${s.authType}${s.keyPath ? ' · ' + escapeHtml(s.keyPath) : ''}</div>
-          </div>
-          <button onclick="loadPuttyToForm(${i})" class="text-xs px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded whitespace-nowrap">Edit &amp; Save</button>
-        </div>`;
-      }).join('');
-    }
-
-    function loadPuttyToForm(i) {
-      const s = puttySessions[i];
-      closePuttyModal();
-      newServer();
-      document.getElementById('srv-name').value = s.name;
-      document.getElementById('srv-user').value = s.user || '';
-      document.getElementById('srv-host').value = s.host;
-      document.getElementById('srv-port').value = s.port;
-      document.getElementById('srv-auth').value = s.authType;
-      document.getElementById('srv-keypath').value = s.keyPath || '';
-      updateAuthFields();
-      if (!s.user) {
-        document.getElementById('srv-status').textContent = 'PuTTY stored no username — please fill it in.';
-        document.getElementById('srv-status').className = 'text-sm text-yellow-400 self-center ml-2';
-      }
-    }
-
-    async function importAllPutty() {
-      const existing = new Set(servers.map(s => s.name.toLowerCase()));
-      let added = 0, skipped = 0;
-      for (const s of puttySessions) {
-        if (existing.has(s.name.toLowerCase()) || !s.user) { skipped++; continue; }
-        const res = await window.api.saveServer({
-          name: s.name, user: s.user, host: s.host, port: s.port,
-          authType: s.authType, keyPath: s.keyPath || '',
-        });
-        if (res.success) added++; else skipped++;
-      }
-      document.getElementById('putty-status').textContent =
-        `Imported ${added}, skipped ${skipped} (existing or missing username).`;
-      await loadServers();
-      renderPuttyList();
-    }
-
     function updateAuthFields() {
-      const auth = document.getElementById('srv-auth').value;
-      document.getElementById('field-keypath').style.display = auth === 'key' ? '' : 'none';
-      document.getElementById('field-passphrase').style.display = auth === 'key' ? '' : 'none';
-      document.getElementById('field-password').style.display = auth === 'password' ? '' : 'none';
+      const a = document.getElementById('srv-auth').value;
+      document.getElementById('field-keypath').style.display = a === 'key' ? '' : 'none';
+      document.getElementById('field-passphrase').style.display = a === 'key' ? '' : 'none';
+      document.getElementById('field-password').style.display = a === 'password' ? '' : 'none';
     }
-
     function newServer() {
       editingId = null;
       document.getElementById('server-form-title').textContent = 'Add Server';
-      document.getElementById('srv-id').value = '';
-      document.getElementById('srv-name').value = '';
-      document.getElementById('srv-user').value = '';
-      document.getElementById('srv-host').value = '';
+      ['srv-id','srv-name','srv-user','srv-host','srv-keypath','srv-passphrase','srv-password'].forEach(id => document.getElementById(id).value = '');
       document.getElementById('srv-port').value = 22;
       document.getElementById('srv-auth').value = 'key';
-      document.getElementById('srv-keypath').value = '';
-      document.getElementById('srv-passphrase').value = '';
-      document.getElementById('srv-password').value = '';
+      document.getElementById('srv-confirm').value = 'global';
       document.getElementById('srv-delete-btn').classList.add('hidden');
       document.getElementById('srv-status').textContent = '';
-      updateAuthFields();
-      loadServers();
+      updateAuthFields(); loadServers();
     }
-
     function editServer(id) {
-      const s = servers.find(x => x.id === id);
-      if (!s) return;
+      const s = servers.find(x => x.id === id); if (!s) return;
       editingId = id;
       document.getElementById('server-form-title').textContent = 'Edit Server';
       document.getElementById('srv-id').value = s.id;
@@ -363,312 +279,359 @@
       document.getElementById('srv-host').value = s.host;
       document.getElementById('srv-port').value = s.port;
       document.getElementById('srv-auth').value = s.authType;
+      document.getElementById('srv-confirm').value = s.confirmPolicy || 'global';
       document.getElementById('srv-keypath').value = s.keyPath || '';
       document.getElementById('srv-passphrase').value = '';
-      document.getElementById('srv-passphrase').placeholder = s.hasPassphrase ? '•••••• (gespeichert, blank = unverändert)' : 'optional';
+      document.getElementById('srv-passphrase').placeholder = s.hasPassphrase ? '•••••• (gespeichert)' : 'optional';
       document.getElementById('srv-password').value = '';
-      document.getElementById('srv-password').placeholder = s.hasPassword ? '•••••• (gespeichert, blank = unverändert)' : '';
+      document.getElementById('srv-password').placeholder = s.hasPassword ? '•••••• (gespeichert)' : '';
       document.getElementById('srv-delete-btn').classList.remove('hidden');
       document.getElementById('srv-status').textContent = '';
-      updateAuthFields();
-      loadServers();
+      updateAuthFields(); loadServers();
     }
-
     async function saveServer() {
       const payload = {
         id: document.getElementById('srv-id').value || undefined,
-        name: document.getElementById('srv-name').value,
-        user: document.getElementById('srv-user').value,
-        host: document.getElementById('srv-host').value,
-        port: document.getElementById('srv-port').value,
-        authType: document.getElementById('srv-auth').value,
+        name: document.getElementById('srv-name').value, user: document.getElementById('srv-user').value,
+        host: document.getElementById('srv-host').value, port: document.getElementById('srv-port').value,
+        authType: document.getElementById('srv-auth').value, confirmPolicy: document.getElementById('srv-confirm').value,
         keyPath: document.getElementById('srv-keypath').value,
-        passphrase: document.getElementById('srv-passphrase').value,
-        password: document.getElementById('srv-password').value,
+        passphrase: document.getElementById('srv-passphrase').value, password: document.getElementById('srv-password').value,
       };
       const res = await window.api.saveServer(payload);
-      const status = document.getElementById('srv-status');
-      if (res.success) {
-        editingId = res.id;
-        document.getElementById('srv-id').value = res.id;
-        document.getElementById('server-form-title').textContent = 'Edit Server';
-        document.getElementById('srv-delete-btn').classList.remove('hidden');
-        status.textContent = 'Saved'; status.className = 'text-sm text-green-400 self-center ml-2';
-        loadServers();
-      } else {
-        status.textContent = res.error; status.className = 'text-sm text-red-400 self-center ml-2';
-      }
+      const st = document.getElementById('srv-status');
+      if (res.success) { editingId = res.id; document.getElementById('srv-id').value = res.id; document.getElementById('srv-delete-btn').classList.remove('hidden'); st.textContent = 'Saved'; st.className = 'text-sm text-green-400 self-center ml-2'; loadServers(); }
+      else { st.textContent = res.error; st.className = 'text-sm text-red-400 self-center ml-2'; }
     }
-
     async function testCurrentServer() {
       const id = document.getElementById('srv-id').value;
       if (!id) { document.getElementById('srv-status').textContent = 'Save the server first.'; return; }
-      const status = document.getElementById('srv-status');
-      status.textContent = 'Testing…'; status.className = 'text-sm text-yellow-400 self-center ml-2';
+      const st = document.getElementById('srv-status'); st.textContent = 'Testing…'; st.className = 'text-sm text-yellow-400 self-center ml-2';
       const res = await window.api.testServer(id);
-      if (res.success) { status.textContent = '✓ Connection OK'; status.className = 'text-sm text-green-400 self-center ml-2'; }
-      else { status.textContent = '✗ ' + res.error; status.className = 'text-sm text-red-400 self-center ml-2'; }
+      if (res.success) { st.textContent = '✓ Connection OK'; st.className = 'text-sm text-green-400 self-center ml-2'; }
+      else { st.textContent = '✗ ' + res.error; st.className = 'text-sm text-red-400 self-center ml-2'; }
     }
-
     async function deleteCurrentServer() {
-      const id = document.getElementById('srv-id').value;
-      if (!id) return;
-      await window.api.deleteServer(id);
-      newServer();
-      loadServers();
+      const id = document.getElementById('srv-id').value; if (!id) return;
+      await window.api.deleteServer(id); newServer(); loadServers();
     }
+    function browseKeyPath() { window.api.pickKeyFile().then(p => { if (p) document.getElementById('srv-keypath').value = p; }); }
 
-    function updateEmptyHint() {
-      const hint = document.getElementById('empty-hint');
-      if (!hint) return;
-      if (servers.length === 0) {
-        hint.innerHTML = 'No servers configured yet — open <b>Servers</b> to add one.';
-      } else {
-        hint.textContent = `${servers.length} server(s) configured.`;
+    // ---------- PuTTY import ----------
+    let puttySessions = [];
+    async function openPuttyModal() {
+      document.getElementById('putty-modal').classList.remove('hidden');
+      document.getElementById('putty-status').textContent = '';
+      const el = document.getElementById('putty-list'); el.innerHTML = '<div class="text-gray-500 p-3 text-center">Loading…</div>';
+      puttySessions = await window.api.listPuttySessions();
+      el.innerHTML = puttySessions.length ? '' : '<div class="text-gray-500 p-3 text-center">No PuTTY sessions found.</div>';
+      if (puttySessions.length) renderPuttyList();
+    }
+    function closePuttyModal() { document.getElementById('putty-modal').classList.add('hidden'); }
+    function renderPuttyList() {
+      const ex = new Set(servers.map(s => s.name.toLowerCase()));
+      document.getElementById('putty-list').innerHTML = puttySessions.map((s, i) => {
+        const dup = ex.has(s.name.toLowerCase());
+        return `<div class="p-2 rounded bg-gray-900 flex items-center justify-between gap-3">
+          <div class="min-w-0"><div class="font-semibold text-emerald-300 truncate">${escapeHtml(s.name)} ${dup ? '<span class="text-xs text-gray-500">(exists)</span>' : ''}</div>
+          <div class="text-gray-500 mono text-xs truncate">${escapeHtml(s.user || '?')}@${escapeHtml(s.host)}:${s.port} · ${s.authType}${s.keyPath ? ' · ' + escapeHtml(s.keyPath) : ''}</div></div>
+          <button onclick="loadPuttyToForm(${i})" class="text-xs px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded whitespace-nowrap">Edit &amp; Save</button></div>`;
+      }).join('');
+    }
+    function loadPuttyToForm(i) {
+      const s = puttySessions[i]; closePuttyModal(); newServer();
+      document.getElementById('srv-name').value = s.name; document.getElementById('srv-user').value = s.user || '';
+      document.getElementById('srv-host').value = s.host; document.getElementById('srv-port').value = s.port;
+      document.getElementById('srv-auth').value = s.authType; document.getElementById('srv-keypath').value = s.keyPath || '';
+      updateAuthFields();
+      if (!s.user) { const st = document.getElementById('srv-status'); st.textContent = 'PuTTY stored no username — please fill it in.'; st.className = 'text-sm text-yellow-400 self-center ml-2'; }
+    }
+    async function importAllPutty() {
+      const ex = new Set(servers.map(s => s.name.toLowerCase())); let added = 0, skipped = 0;
+      for (const s of puttySessions) {
+        if (ex.has(s.name.toLowerCase()) || !s.user) { skipped++; continue; }
+        const res = await window.api.saveServer({ name: s.name, user: s.user, host: s.host, port: s.port, authType: s.authType, keyPath: s.keyPath || '' });
+        res.success ? added++ : skipped++;
       }
+      document.getElementById('putty-status').textContent = `Imported ${added}, skipped ${skipped} (existing or missing username).`;
+      await loadServers(); renderPuttyList();
     }
 
-    window.api.onOpenServers(() => { if (!serversVisible) showServers(); });
-
-    // --- MCP status ---
-    let mcpClientCount = 0;
-    function updateMcpStatusDisplay() {
-      const el = document.getElementById('mcp-status');
-      if (mcpClientCount > 0) {
-        el.textContent = `MCP: connected (${mcpClientCount})`;
-        el.className = 'text-xs px-2 py-0.5 rounded-full bg-green-600';
-      } else {
-        el.textContent = 'MCP: disconnected';
-        el.className = 'text-xs px-2 py-0.5 rounded-full bg-red-600';
-      }
+    // ---------- Host dropdown ----------
+    function refreshHostDropdown() {
+      const sel = document.getElementById('term-host');
+      const prev = sel.value;
+      sel.innerHTML = servers.map(s => `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`).join('');
+      if (servers.find(s => s.name === prev)) sel.value = prev;
+      currentHost = sel.value || '';
+      document.getElementById('history-host-label').textContent = currentHost ? '· ' + currentHost : '';
+      renderHistory();
     }
-    window.api.onMcpStatus((status) => { if (status === 'disconnected') mcpClientCount = 0; updateMcpStatusDisplay(); });
-    window.api.onMcpClientCount((count) => { mcpClientCount = count; updateMcpStatusDisplay(); });
+    function onHostChange() {
+      currentHost = document.getElementById('term-host').value;
+      document.getElementById('history-host-label').textContent = currentHost ? '· ' + currentHost : '';
+      renderHistory();
+    }
 
-    // --- Command handling ---
+    // ---------- Pending commands ----------
     window.api.onNewCommand((cmd) => {
-      if (serversVisible) hideServers();
-      commands.push(cmd);
-      renderCommandList();
-      if (!current) selectCommand(cmd.id);
+      pending.push(cmd); renderPending();
+      if (!selected) selectPending(cmd.id);
+      showToast('Neuer Befehl', `${cmd.host}: wartet auf Freigabe`);
+    });
+    function renderPending() {
+      const el = document.getElementById('pending-list');
+      el.innerHTML = pending.length ? pending.map(c => `
+        <div onclick="selectPending('${c.id}')" class="p-2 rounded cursor-pointer text-xs hover:bg-gray-700 border-l-2 border-amber-500 ${selected?.kind==='pending'&&selected.item.id===c.id?'bg-gray-700':''}">
+          <div class="text-emerald-300 font-semibold">${escapeHtml(c.host)}</div>
+          <div class="text-gray-300 truncate mono">${escapeHtml(c.command.substring(0,60))}</div>
+        </div>`).join('') : '<div class="text-xs text-gray-500 p-2 text-center">keine</div>';
+    }
+    function selectPending(id) {
+      const item = pending.find(c => c.id === id); if (!item) return;
+      selected = { kind: 'pending', item };
+      showDetail();
+      document.getElementById('detail-host').textContent = item.host;
+      document.getElementById('detail-id').textContent = item.id;
+      document.getElementById('detail-badge').innerHTML = '<span class="px-2 py-0.5 rounded-full text-xs bg-amber-600">pending</span>';
+      const desc = document.getElementById('detail-desc');
+      if (item.description) { desc.textContent = item.description; desc.classList.remove('hidden'); } else desc.classList.add('hidden');
+      const ta = document.getElementById('detail-cmd'); ta.value = item.command; ta.readOnly = false;
+      document.getElementById('detail-editable-hint').textContent = '(editierbar)';
+      document.getElementById('detail-output').textContent = '';
+      setButtons({ run: true, reject: true, send: false, cancel: false });
+      document.getElementById('detail-status').textContent = '';
+      updateDangerMode(); renderPending(); renderHistory();
+    }
+
+    function setButtons({ run, reject, send, cancel }) {
+      document.getElementById('run-btn').classList.toggle('hidden', !run);
+      document.getElementById('reject-btn').classList.toggle('hidden', !reject);
+      document.getElementById('send-btn').classList.toggle('hidden', !send);
+      document.getElementById('cancel-btn').classList.toggle('hidden', !cancel);
+    }
+    let lastResult = null;
+    async function runCurrent() {
+      if (!selected || selected.kind !== 'pending') return;
+      const item = selected.item;
+      const command = document.getElementById('detail-cmd').value;
+      document.getElementById('detail-status').textContent = 'Running…';
+      setButtons({ run: false, reject: false, send: false, cancel: true });
+      try {
+        const res = await window.api.approveCommand(item.id, item.host, command);
+        if (res.success) {
+          lastResult = res.data; renderResult(res.data);
+          document.getElementById('detail-status').textContent = 'Done — review, then Send to Claude';
+          setButtons({ run: false, reject: false, send: true, cancel: false });
+        } else {
+          lastResult = null; document.getElementById('detail-output').textContent = 'Error: ' + res.error;
+          document.getElementById('detail-status').textContent = 'Error';
+          // allow sending the error back
+          item._error = res.error;
+          setButtons({ run: false, reject: false, send: true, cancel: false });
+        }
+      } catch (e) {
+        document.getElementById('detail-status').textContent = 'Error: ' + e.message;
+        setButtons({ run: true, reject: true, send: false, cancel: false });
+      }
+    }
+    async function cancelCurrent() {
+      if (!selected) return;
+      await window.api.cancelCommand(selected.item.id);
+      document.getElementById('detail-status').textContent = 'Cancelled';
+    }
+    function rejectCurrent() {
+      if (!selected || selected.kind !== 'pending') return;
+      const item = selected.item;
+      window.api.rejectCommand(item.id, 'Rejected by user');
+      persistHistory({ host: item.host, command: item.command, status: 'rejected', description: item.description });
+      removePending(item.id);
+    }
+    async function sendCurrent() {
+      if (!selected || selected.kind !== 'pending') return;
+      const item = selected.item;
+      if (item._error) {
+        window.api.sendError(item.id, item._error);
+        persistHistory({ host: item.host, command: document.getElementById('detail-cmd').value, status: 'error', stderr: item._error, description: item.description });
+      } else if (lastResult) {
+        window.api.sendResult(item.id, lastResult);
+        persistHistory({ host: item.host, command: document.getElementById('detail-cmd').value, status: 'sent', exitCode: lastResult.code, signal: lastResult.signal, stdout: lastResult.stdout, stderr: lastResult.stderr, description: item.description });
+      }
+      removePending(item.id);
+    }
+    function removePending(id) {
+      pending = pending.filter(c => c.id !== id);
+      selected = null; lastResult = null;
+      renderPending();
+      if (pending.length) selectPending(pending[0].id); else hideDetail();
+    }
+
+    // ---------- Auto-run (auto-list mode) ----------
+    window.api.onCommandAutostart((d) => { termEcho(d.host, `\r\n\x1b[2m$ ${d.command}\x1b[0m (auto)\r\n`); });
+    window.api.onCommandAutodone((d) => {
+      persistHistory({ host: d.host, command: d.command, status: 'auto', exitCode: d.result.code, signal: d.result.signal, stdout: d.result.stdout, stderr: d.result.stderr });
+      termEcho(d.host, (d.result.stdout || '') + (d.result.stderr ? '\x1b[31m' + d.result.stderr + '\x1b[0m' : ''));
+      showToast('Auto-run', `${d.host}: ${d.command.substring(0,40)} (exit ${d.result.code})`);
+    });
+    window.api.onCommandAutoerror((d) => {
+      persistHistory({ host: d.host, command: d.command, status: 'error', stderr: d.error });
+      termEcho(d.host, `\r\n\x1b[31m${d.error}\x1b[0m\r\n`);
     });
 
-    function renderCommandList() {
-      const list = document.getElementById('cmd-list');
-      if (commands.length === 0) {
-        list.innerHTML = '<div class="text-xs text-gray-500 p-3 text-center">No pending commands</div>';
-        return;
-      }
-      list.innerHTML = commands.map(c => `
-        <div onclick="selectCommand('${c.id}')"
-             class="p-2 rounded cursor-pointer text-xs hover:bg-gray-700 ${current?.id === c.id ? 'bg-gray-700 border border-blue-500' : ''}">
-          <div class="text-emerald-300 font-semibold">${escapeHtml(c.host)}</div>
-          <div class="text-gray-300 truncate mono">${escapeHtml(c.command.substring(0, 70))}</div>
-        </div>`).join('');
-    }
-
-    function selectCommand(id) {
-      current = commands.find(c => c.id === id);
-      currentOutput = null;
-      currentError = null;
-      if (!current) return;
-
-      document.getElementById('empty-state').classList.add('hidden');
-      document.getElementById('cmd-detail').classList.remove('hidden');
-      document.getElementById('output-area').classList.add('hidden');
-      document.getElementById('error-area').classList.add('hidden');
-      document.getElementById('cmd-status').textContent = '';
-
-      document.getElementById('cmd-host').textContent = current.host;
-      document.getElementById('cmd-id').textContent = current.id;
-      document.getElementById('cmd-editor').value = current.command;
-      updateDangerMode();
-
-      const descEl = document.getElementById('cmd-description');
-      if (current.description) { descEl.textContent = current.description; descEl.classList.remove('hidden'); }
-      else descEl.classList.add('hidden');
-
-      renderCommandList();
-    }
-
-    function setRunning(running) {
-      document.getElementById('run-btn').classList.toggle('hidden', running);
-      document.getElementById('reject-btn').classList.toggle('hidden', running);
-      document.getElementById('cmd-cancel-btn').classList.toggle('hidden', !running);
-    }
-
-    async function approveCurrent() {
-      if (!current) return;
-      const command = document.getElementById('cmd-editor').value;
-      document.getElementById('cmd-status').textContent = 'Running…';
-      setRunning(true);
-      try {
-        const result = await window.api.approveCommand(current.id, current.host, command);
-        if (result.success) {
-          currentOutput = result.data;
-          currentError = null;
-          renderOutput();
-          document.getElementById('cmd-status').textContent = 'Done — review before sending';
-        } else {
-          currentError = result.error;
-          currentOutput = null;
-          document.getElementById('error-area').classList.remove('hidden');
-          document.getElementById('error-message').textContent = result.error;
-          document.getElementById('cmd-status').textContent = 'Error';
-        }
-      } finally {
-        setRunning(false);
-      }
-    }
-
-    async function cancelCurrent() {
-      if (!current) return;
-      const btn = document.getElementById('cmd-cancel-btn');
-      btn.disabled = true; btn.textContent = 'Cancelling…';
-      try {
-        const res = await window.api.cancelCommand(current.id);
-        document.getElementById('cmd-status').textContent = res.success ? 'Cancelled' : ('Cancel failed: ' + res.error);
-      } finally {
-        btn.disabled = false; btn.textContent = 'Cancel';
-      }
-    }
-
-    function rejectCurrent() {
-      if (!current) return;
-      window.api.rejectCommand(current.id, 'Rejected by user');
-      addToHistory(current, 'rejected');
-      removeCurrentFromQueue();
-    }
-
-    function renderOutput() {
-      if (!currentOutput) return;
-      document.getElementById('output-area').classList.remove('hidden');
-      const o = currentOutput;
-      const badge = document.getElementById('exit-badge');
-      const ok = o.code === 0;
-      badge.innerHTML = `<span class="px-2 py-0.5 rounded-full text-xs ${ok ? 'bg-green-700' : 'bg-red-700'}">exit ${o.code}${o.signal ? ' / ' + o.signal : ''}</span>`;
-      let text = '';
-      if (o.stdout) text += o.stdout;
-      if (o.stderr) text += (text ? '\n' : '') + '\x1b[stderr]\n' + o.stderr;
-      if (!text) text = '(no output)';
-      document.getElementById('output-content').textContent = text;
-    }
-
-    function sendOutput() {
-      if (!current || !currentOutput) return;
-      window.api.sendResult(current.id, currentOutput);
-      addToHistory(current, 'sent');
-      removeCurrentFromQueue();
-    }
-
-    function sendErrorToClaude() {
-      if (!current || !currentError) return;
-      window.api.sendError(current.id, currentError);
-      addToHistory(current, 'error');
-      removeCurrentFromQueue();
-    }
-
-    function removeCurrentFromQueue() {
-      commands = commands.filter(c => c.id !== current.id);
-      current = null; currentOutput = null; currentError = null;
-      if (commands.length > 0) {
-        selectCommand(commands[0].id);
-      } else {
-        document.getElementById('empty-state').classList.remove('hidden');
-        document.getElementById('cmd-detail').classList.add('hidden');
-        renderCommandList();
-        updateDangerMode();
-      }
-    }
-
-    // --- History ---
-    function addToHistory(cmd, status) {
-      history.unshift({ host: cmd.host, command: cmd.command, status, time: new Date().toLocaleTimeString() });
-      if (history.length > 50) history.pop();
+    // ---------- History (persisted) ----------
+    async function loadHistory() { history = await window.api.getHistory(); renderHistory(); }
+    async function persistHistory(entry) {
+      const full = { ...entry, time: new Date().toLocaleString() };
+      history.unshift(full); if (history.length > 1000) history.pop();
+      await window.api.addHistory(full);
       renderHistory();
     }
     function renderHistory() {
-      const list = document.getElementById('history-list');
-      list.innerHTML = history.map(h => {
-        const color = h.status === 'sent' ? 'text-green-400' : h.status === 'rejected' ? 'text-red-400' : 'text-yellow-400';
-        return `<div class="p-1 rounded">
-          <span class="${color}">[${h.status}]</span> <span class="text-gray-500">${h.time}</span> <span class="text-emerald-300">${escapeHtml(h.host)}</span>
-          <div class="text-gray-400 mono truncate">${escapeHtml(h.command.substring(0, 80))}</div>
+      const el = document.getElementById('history-list');
+      const items = history.filter(h => !currentHost || h.host === currentHost);
+      el.innerHTML = items.length ? items.map((h, i) => {
+        const color = h.status === 'sent' || h.status === 'auto' ? 'text-green-400' : h.status === 'rejected' ? 'text-red-400' : h.status === 'error' ? 'text-orange-400' : 'text-yellow-400';
+        const code = (h.exitCode === 0 || h.exitCode > 0) ? ` <span class="text-gray-500">exit ${h.exitCode}</span>` : '';
+        return `<div onclick="selectHistory(${history.indexOf(h)})" class="p-1.5 rounded cursor-pointer hover:bg-gray-700 ${selected?.kind==='history'&&selected.item===h?'bg-gray-700 border border-gray-600':''}">
+          <div><span class="${color}">[${h.status}]</span> <span class="text-gray-500">${h.time||''}</span>${code}</div>
+          <div class="text-gray-300 mono truncate">${escapeHtml((h.command||'').substring(0,80))}</div>
         </div>`;
-      }).join('');
+      }).join('') : '<div class="text-gray-500 p-2 text-center">kein Verlauf</div>';
+    }
+    function selectHistory(idx) {
+      const h = history[idx]; if (!h) return;
+      selected = { kind: 'history', item: h };
+      showDetail();
+      document.getElementById('detail-host').textContent = h.host;
+      document.getElementById('detail-id').textContent = h.time || '';
+      document.getElementById('detail-badge').innerHTML = `<span class="px-2 py-0.5 rounded-full text-xs bg-gray-600">${h.status}</span>`;
+      document.getElementById('detail-desc').classList.add('hidden');
+      const ta = document.getElementById('detail-cmd'); ta.value = h.command || ''; ta.readOnly = true;
+      document.getElementById('detail-editable-hint').textContent = '(Verlauf — read-only)';
+      renderResult({ code: h.exitCode, signal: h.signal, stdout: h.stdout, stderr: h.stderr });
+      setButtons({ run: false, reject: false, send: false, cancel: false });
+      document.getElementById('detail-status').textContent = '';
+      updateDangerMode(); renderPending(); renderHistory();
+    }
+    async function clearHistoryForHost() {
+      if (!currentHost) return;
+      await window.api.clearHistory(currentHost);
+      history = history.filter(h => h.host !== currentHost);
+      renderHistory();
     }
 
-    // --- Danger-Mode ---
-    const DANGER_REGEX = /(\brm\b|\brmdir\b|\bdd\b|\bmkfs\b|\bshutdown\b|\breboot\b|\bhalt\b|\bpoweroff\b|\bkill\b|\bkillall\b|\bpkill\b|\bsudo\b|\bsu\b|\bchmod\b|\bchown\b|\bmv\b|\b(systemctl|service)\s+\S+\s*(stop|restart|disable|mask)|\btruncate\b|\bdrop\b|>\s*\/|>>\s*\/|\bcrontab\b|\biptables\b|\bufw\b|\buserdel\b|\bgroupdel\b|\bmount\b|\bumount\b)/i;
-    function detectDanger(cmd) {
-      if (!cmd) return null;
-      const m = cmd.match(DANGER_REGEX);
-      return m ? m[0].trim().split(/\s+/)[0].toUpperCase() : null;
+    function renderResult(r) {
+      const badge = document.getElementById('detail-badge');
+      if (r && (r.code === 0 || r.code > 0)) {
+        const ok = r.code === 0;
+        badge.innerHTML = `<span class="px-2 py-0.5 rounded-full text-xs ${ok?'bg-green-700':'bg-red-700'}">exit ${r.code}${r.signal?' / '+r.signal:''}</span>`;
+      }
+      let text = '';
+      if (r && r.stdout) text += r.stdout;
+      if (r && r.stderr) text += (text ? '\n' : '') + '[stderr]\n' + r.stderr;
+      document.getElementById('detail-output').textContent = text || '(no output)';
     }
+
+    function showDetail() { document.getElementById('detail-empty').classList.add('hidden'); document.getElementById('detail-body').classList.remove('hidden'); }
+    function hideDetail() { document.getElementById('detail-empty').classList.remove('hidden'); document.getElementById('detail-body').classList.add('hidden'); selected = null; updateDangerMode(); }
+
+    // ---------- Terminal (xterm + ssh2 shell) ----------
+    let term = null, fitAddon = null, termSid = null, termHost = '';
+    function initTerm() {
+      term = new Terminal({ fontFamily: 'Cascadia Code, Consolas, monospace', fontSize: 13, cursorBlink: true, theme: { background: '#000000' } });
+      fitAddon = new FitAddon.FitAddon();
+      term.loadAddon(fitAddon);
+      term.open(document.getElementById('terminal'));
+      fitTerm();
+      term.onData(d => { if (termSid) window.api.termInput(termSid, d); });
+      window.addEventListener('resize', fitTerm);
+    }
+    function fitTerm() { try { if (fitAddon) { fitAddon.fit(); if (termSid && term) window.api.termResize(termSid, term.cols, term.rows); } } catch {} }
+    async function connectTerminal() {
+      if (!currentHost) { showToast('Terminal', 'Kein Server gewählt'); return; }
+      if (termSid) disconnectTerminal();
+      term.reset(); fitTerm();
+      termHost = currentHost;
+      termSid = 'term_' + Date.now();
+      document.getElementById('term-label').textContent = currentHost + ' (verbinde…)';
+      const res = await window.api.termOpen(termSid, currentHost, term.cols, term.rows);
+      if (res.success) {
+        document.getElementById('term-label').textContent = currentHost + ' ✓';
+        document.getElementById('term-disc-btn').classList.remove('hidden');
+        term.focus();
+      } else {
+        term.writeln('\x1b[31mConnect failed: ' + res.error + '\x1b[0m');
+        document.getElementById('term-label').textContent = currentHost + ' ✗';
+        termSid = null;
+      }
+    }
+    function disconnectTerminal() {
+      if (termSid) window.api.termClose(termSid);
+      termSid = null; termHost = '';
+      document.getElementById('term-label').textContent = '— nicht verbunden —';
+      document.getElementById('term-disc-btn').classList.add('hidden');
+    }
+    window.api.onTermData(({ sid, data }) => { if (sid === termSid && term) term.write(data); });
+    window.api.onTermClosed(({ sid }) => { if (sid === termSid) { term && term.writeln('\r\n\x1b[2m[Verbindung geschlossen]\x1b[0m'); disconnectTerminal(); } });
+    function termEcho(host, text) { if (term && termSid && host === termHost) term.write(text.replace(/\n/g, '\r\n')); }
+
+    // ---------- MCP status ----------
+    let mcpClientCount = 0;
+    function updateMcp() {
+      const el = document.getElementById('mcp-status');
+      if (mcpClientCount > 0) { el.textContent = `MCP: connected (${mcpClientCount})`; el.className = 'text-xs px-2 py-0.5 rounded-full bg-green-600'; }
+      else { el.textContent = 'MCP: disconnected'; el.className = 'text-xs px-2 py-0.5 rounded-full bg-red-600'; }
+    }
+    window.api.onMcpStatus((s) => { if (s === 'disconnected') mcpClientCount = 0; updateMcp(); });
+    window.api.onMcpClientCount((c) => { mcpClientCount = c; updateMcp(); });
+    window.api.onShowNotification((d) => { showToast(d.title, d.body); if (Notification.permission === 'granted') new Notification(d.title, { body: d.body }); });
+    window.api.onOpenServers(() => { if (!serversVisible) showServers(); });
+
+    // ---------- Danger-Mode ----------
+    const DANGER_REGEX = /(\brm\b|\brmdir\b|\bdd\b|\bmkfs\b|\bshutdown\b|\breboot\b|\bhalt\b|\bpoweroff\b|\bkill\b|\bkillall\b|\bpkill\b|\bsudo\b|\bchmod\b|\bchown\b|\b(systemctl|service)\s+\S+\s*(stop|restart|disable|mask)|\btruncate\b|>\s*\/|>>\s*\/|\bcrontab\b|\biptables\b|\buserdel\b|\bmount\b|\bumount\b)/i;
+    function detectDanger(c) { if (!c) return null; const m = c.match(DANGER_REGEX); return m ? m[0].trim().split(/\s+/)[0].toUpperCase() : null; }
     function updateDangerMode() {
-      const detailVisible = !document.getElementById('cmd-detail').classList.contains('hidden');
-      const cmd = detailVisible ? document.getElementById('cmd-editor').value : '';
-      const keyword = detectDanger(cmd);
-      document.body.classList.toggle('danger-mode', !!keyword);
-      const kwEl = document.getElementById('danger-keyword');
-      if (kwEl) kwEl.textContent = keyword ? '· ' + keyword : '';
+      const bodyVisible = !document.getElementById('detail-body').classList.contains('hidden');
+      const c = bodyVisible ? document.getElementById('detail-cmd').value : '';
+      const kw = detectDanger(c);
+      document.body.classList.toggle('danger-mode', !!kw);
+      document.getElementById('danger-keyword').textContent = kw ? '· ' + kw : '';
     }
 
-    // --- Helpers ---
-    function escapeHtml(str) {
-      const div = document.createElement('div');
-      div.textContent = str == null ? '' : String(str);
-      return div.innerHTML;
-    }
+    // ---------- Helpers ----------
+    function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+    function showToast(t, b) { const el = document.createElement('div'); el.className = 'toast'; el.innerHTML = `<div class="font-semibold">${escapeHtml(t)}</div><div class="opacity-80 text-xs">${escapeHtml(b)}</div>`; el.onclick = () => el.remove(); document.body.appendChild(el); setTimeout(() => el.remove(), 5000); }
+    function generateAppIcon() { const img = new Image(); img.onload = () => { const c = document.createElement('canvas'); c.width = c.height = 256; c.getContext('2d').drawImage(img, 0, 0, 256, 256); window.api.setAppIcon(c.toDataURL('image/png')); }; img.src = 'icon.svg'; }
 
-    function initResize(handleId, sidebarId) {
-      const handle = document.getElementById(handleId);
-      const sidebar = document.getElementById(sidebarId);
-      if (!handle || !sidebar) return;
-      let startX, startW;
+    function initResizeH(handleId, sidebarId) {
+      const handle = document.getElementById(handleId), sidebar = document.getElementById(sidebarId);
       handle.addEventListener('mousedown', (e) => {
-        startX = e.clientX; startW = sidebar.offsetWidth;
-        handle.classList.add('active');
-        document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none';
-        const onMove = (e) => { sidebar.style.width = Math.max(160, Math.min(startW + (e.clientX - startX), 600)) + 'px'; };
-        const onUp = () => {
-          handle.classList.remove('active');
-          document.body.style.cursor = ''; document.body.style.userSelect = '';
-          document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp);
-        };
-        document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp);
+        const startX = e.clientX, startW = sidebar.offsetWidth; handle.classList.add('active');
+        document.body.style.userSelect = 'none';
+        const mv = (e) => { sidebar.style.width = Math.max(180, Math.min(startW + (e.clientX - startX), 600)) + 'px'; };
+        const up = () => { handle.classList.remove('active'); document.body.style.userSelect = ''; document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); fitTerm(); };
+        document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+      });
+    }
+    function initResizeV() {
+      const handle = document.getElementById('vsplit-handle'), top = document.getElementById('detail-panel');
+      handle.addEventListener('mousedown', (e) => {
+        const startY = e.clientY, startH = top.offsetHeight; document.body.style.userSelect = 'none';
+        const mv = (e) => { top.style.height = Math.max(80, startH + (e.clientY - startY)) + 'px'; };
+        const up = () => { document.body.style.userSelect = ''; document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); fitTerm(); };
+        document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
       });
     }
 
-    function showToast(title, body) {
-      const toast = document.createElement('div');
-      toast.className = 'toast';
-      toast.innerHTML = `<div class="toast-title">${escapeHtml(title)}</div><div class="toast-body">${escapeHtml(body)}</div>`;
-      toast.onclick = () => toast.remove();
-      document.body.appendChild(toast);
-      setTimeout(() => { if (toast.parentNode) { toast.style.animation = 'toastOut 0.3s ease-in forwards'; setTimeout(() => toast.remove(), 300); } }, 5000);
-    }
-    window.api.onShowNotification((data) => {
-      showToast(data.title, data.body);
-      if (Notification.permission === 'granted') new Notification(data.title, { body: data.body });
-    });
-
-    function generateAppIcon() {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        canvas.width = 256; canvas.height = 256;
-        canvas.getContext('2d').drawImage(img, 0, 0, 256, 256);
-        window.api.setAppIcon(canvas.toDataURL('image/png'));
-      };
-      img.src = 'icon.svg';
-    }
-
-    // --- Init ---
-    loadServers();
-    initResize('cmd-resize-handle', 'cmd-sidebar');
+    // ---------- Init ----------
+    document.getElementById('detail-cmd').addEventListener('input', updateDangerMode);
+    initTerm();
+    initResizeH('cmd-resize-handle', 'cmd-sidebar');
+    initResizeV();
     generateAppIcon();
-    document.getElementById('cmd-editor').addEventListener('input', updateDangerMode);
+    loadMode();
+    loadServers();
+    loadHistory();
     if (Notification.permission !== 'granted' && Notification.permission !== 'denied') Notification.requestPermission();
   </script>
 </body>

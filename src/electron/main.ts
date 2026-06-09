@@ -21,13 +21,44 @@ interface ServerConfig {
   keyPath?: string;
   passwordEnc?: string;    // base64 safeStorage ciphertext
   passphraseEnc?: string;  // base64 safeStorage ciphertext
+  // Per-server override of the global confirm mode:
+  //   'global' = follow the global setting, 'always' = force approval, 'auto' = never ask (just run/log)
+  confirmPolicy?: 'global' | 'always' | 'auto';
 }
+
+// 'confirm-each' = every command waits for approval; 'auto-list' = run without asking (just listed).
+type ConfirmMode = 'confirm-each' | 'auto-list';
+
+// Use a dedicated app name + userData dir. When run unpackaged (electron dist/...),
+// Electron defaults the app name to "Electron", so several such apps would share one
+// userData dir AND one single-instance lock — meaning only one could run at a time
+// (it killed the sibling SQL proxy). A distinct name gives us our own lock + store.
+// Must run BEFORE `new Store()` (Store resolves userData immediately).
+app.setName('mcp-ssh-proxy');
+try {
+  app.setPath('userData', path.join(app.getPath('appData'), 'mcp-ssh-proxy'));
+} catch { /* appData may be unavailable in odd environments */ }
 
 const store = new Store({
   defaults: {
     servers: [] as ServerConfig[],
+    confirmMode: 'confirm-each' as ConfirmMode,
+    history: [] as any[],   // persisted command history (per server, flat list with `host`)
   },
 });
+
+// One-time migration: adopt servers previously saved under the shared default userData.
+try {
+  if (((store.get('servers') as ServerConfig[]) || []).length === 0) {
+    const legacy = path.join(app.getPath('appData'), 'Electron', 'config.json');
+    if (fs.existsSync(legacy)) {
+      const data = JSON.parse(fs.readFileSync(legacy, 'utf8'));
+      if (Array.isArray(data.servers) && data.servers.length > 0) {
+        store.set('servers', data.servers);
+      }
+    }
+  }
+} catch { /* best-effort migration */ }
 
 // Single-instance lock — prevents multiple Electron windows when several MCP processes race to spawn one.
 if (!app.requestSingleInstanceLock()) {
@@ -82,6 +113,28 @@ function getServers(): ServerConfig[] {
 function findServer(name: string): ServerConfig | undefined {
   const lower = name.toLowerCase();
   return getServers().find(s => s.name.toLowerCase() === lower);
+}
+
+function getConfirmMode(): ConfirmMode {
+  return (store.get('confirmMode') as ConfirmMode) || 'confirm-each';
+}
+
+// Resolve whether a command on this server must be confirmed: per-server policy wins,
+// otherwise fall back to the global mode.
+function needsConfirm(server: ServerConfig): boolean {
+  const pol = server.confirmPolicy || 'global';
+  if (pol === 'always') return true;
+  if (pol === 'auto') return false;
+  return getConfirmMode() === 'confirm-each';
+}
+
+// Persisted, per-server command history (flat list with a `host` field).
+function addHistoryEntry(entry: any): void {
+  const cap = (s: any) => (typeof s === 'string' && s.length > 10000 ? s.slice(0, 10000) + '\n…(truncated)' : s);
+  const hist = (store.get('history') as any[]) || [];
+  hist.unshift({ ...entry, stdout: cap(entry.stdout), stderr: cap(entry.stderr) });
+  if (hist.length > 1000) hist.length = 1000;
+  store.set('history', hist);
 }
 
 // --- Helper: send messages to specific MCP client ---
@@ -268,7 +321,28 @@ function startWebSocketServer() {
 
         if (msg.type === 'command') {
           requestToClient.set(msg.id, ws);
+          const server = findServer(msg.host);
 
+          if (server && !needsConfirm(server)) {
+            // Auto-run mode: execute immediately, return to the agent, and echo/log in the UI.
+            mainWindow?.webContents.send('command-autostart', {
+              id: msg.id, host: msg.host, command: msg.command, description: msg.description,
+            });
+            executeCommand(server, msg.command, msg.id)
+              .then((result) => {
+                const client = requestToClient.get(msg.id);
+                if (client && client.readyState === WebSocket.OPEN) ws_sendResult(client, msg.id, result);
+                mainWindow?.webContents.send('command-autodone', { id: msg.id, host: msg.host, command: msg.command, result });
+              })
+              .catch((err: any) => {
+                const client = requestToClient.get(msg.id);
+                if (client && client.readyState === WebSocket.OPEN) ws_sendError(client, msg.id, err.message);
+                mainWindow?.webContents.send('command-autoerror', { id: msg.id, host: msg.host, command: msg.command, error: err.message });
+              });
+            return;
+          }
+
+          // Confirm mode (or unknown host — still surface it so the user can see/reject).
           mainWindow?.webContents.send('new-command', {
             id: msg.id,
             host: msg.host,
@@ -356,6 +430,67 @@ ipcMain.on('reject-command', (_event, { id, reason }) => {
   }
 });
 
+// --- Confirm mode ---
+ipcMain.handle('get-confirm-mode', () => getConfirmMode());
+ipcMain.handle('set-confirm-mode', (_e, { mode }) => {
+  store.set('confirmMode', mode === 'auto-list' ? 'auto-list' : 'confirm-each');
+  return true;
+});
+
+// --- Persisted history ---
+ipcMain.handle('get-history', () => (store.get('history') as any[]) || []);
+ipcMain.handle('add-history', (_e, entry) => { addHistoryEntry(entry); return true; });
+ipcMain.handle('clear-history', (_e, { host }) => {
+  if (!host) store.set('history', []);
+  else store.set('history', ((store.get('history') as any[]) || []).filter(h => h.host !== host));
+  return true;
+});
+
+// --- Interactive shell sessions (xterm terminal, PuTTY-style) ---
+const termSessions = new Map<string, { conn: SshClient; stream: any }>();
+
+ipcMain.handle('term-open', async (_e, { sid, host, cols, rows }) => {
+  const server = findServer(host);
+  if (!server) return { success: false, error: `No server named "${host}" is configured.` };
+  try {
+    const cfg = await buildConnectConfig(server);
+    const conn = new SshClient();
+    await new Promise<void>((resolve, reject) => {
+      conn.on('ready', () => resolve());
+      conn.on('error', (e) => reject(e));
+      conn.connect(cfg);
+    });
+    const stream: any = await new Promise((resolve, reject) => {
+      conn.shell({ term: 'xterm-256color', cols: cols || 80, rows: rows || 24 }, (err, s) => err ? reject(err) : resolve(s));
+    });
+    termSessions.set(sid, { conn, stream });
+    stream.on('data', (d: Buffer) => mainWindow?.webContents.send('term-data', { sid, data: d.toString('utf8') }));
+    stream.on('close', () => {
+      try { conn.end(); } catch { /* ignore */ }
+      termSessions.delete(sid);
+      mainWindow?.webContents.send('term-closed', { sid });
+    });
+    return { success: true };
+  } catch (e: any) {
+    return { success: false, error: e.message };
+  }
+});
+
+ipcMain.on('term-input', (_e, { sid, data }) => {
+  const t = termSessions.get(sid);
+  if (t) { try { t.stream.write(data); } catch { /* ignore */ } }
+});
+
+ipcMain.on('term-resize', (_e, { sid, cols, rows }) => {
+  const t = termSessions.get(sid);
+  if (t) { try { t.stream.setWindow(rows, cols, 0, 0); } catch { /* ignore */ } }
+});
+
+ipcMain.on('term-close', (_e, { sid }) => {
+  const t = termSessions.get(sid);
+  if (t) { try { t.stream.end(); t.conn.end(); } catch { /* ignore */ } termSessions.delete(sid); }
+});
+
 // --- Server management ---
 // Returned to the renderer WITHOUT decrypted secrets — only a flag whether one is stored.
 ipcMain.handle('get-servers', () => {
@@ -367,6 +502,7 @@ ipcMain.handle('get-servers', () => {
     user: s.user,
     authType: s.authType,
     keyPath: s.keyPath || '',
+    confirmPolicy: s.confirmPolicy || 'global',
     hasPassword: !!s.passwordEnc,
     hasPassphrase: !!s.passphraseEnc,
   }));
@@ -388,6 +524,7 @@ ipcMain.handle('save-server', (_event, incoming: any) => {
     user: (incoming.user || '').trim(),
     authType: incoming.authType || 'key',
     keyPath: (incoming.keyPath || '').trim() || undefined,
+    confirmPolicy: (['global', 'always', 'auto'].includes(incoming.confirmPolicy) ? incoming.confirmPolicy : 'global'),
     // Empty password/passphrase field => keep the previously stored secret (blank = unchanged).
     passwordEnc: incoming.password ? encryptSecret(incoming.password) : existing?.passwordEnc,
     passphraseEnc: incoming.passphrase ? encryptSecret(incoming.passphrase) : existing?.passphraseEnc,
