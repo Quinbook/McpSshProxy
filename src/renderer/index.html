@@ -165,9 +165,8 @@
           </div>
           <div id="detail-body" class="hidden flex-1 flex flex-col overflow-hidden">
             <div class="px-4 py-2 bg-gray-800 border-b border-gray-700 flex items-center gap-3">
-              <span class="text-xs text-gray-400">Host:</span>
               <span id="detail-host" class="text-sm font-semibold text-emerald-300 mono"></span>
-              <span id="detail-badge" class="ml-2"></span>
+              <span id="detail-badge"></span>
               <span id="detail-id" class="text-gray-600 text-xs ml-auto"></span>
             </div>
             <div id="detail-desc" class="px-4 py-1.5 bg-gray-800/60 border-b border-gray-700 text-sm text-blue-300 hidden"></div>
@@ -411,7 +410,7 @@
       const item = pending.find(c => c.id === id); if (!item) return;
       selected = { kind: 'pending', item };
       showDetail();
-      document.getElementById('detail-host').textContent = item.host;
+      document.getElementById('detail-host').textContent = '';   // server already shown in the toolbar
       document.getElementById('detail-id').textContent = item.id;
       document.getElementById('detail-badge').innerHTML = '<span class="px-2 py-0.5 rounded-full text-xs bg-amber-600">pending</span>';
       const desc = document.getElementById('detail-desc');
@@ -569,7 +568,10 @@
     let sessions = [];   // { sid, host, term, fit, container, connected }
     let activeSid = null;
 
-    function updateTermEmpty() { document.getElementById('term-empty').style.display = sessions.length ? 'none' : 'flex'; }
+    function updateTermEmpty() {
+      const hasActive = sessions.some(s => s.sid === activeSid);
+      document.getElementById('term-empty').style.display = hasActive ? 'none' : 'flex';
+    }
 
     async function connectTerminal() {
       if (!currentHost) { showToast('Terminal', 'Kein Server gewählt'); return; }
@@ -614,19 +616,27 @@
       renderTabs();
       renderServerList();
       updateConnectBtn();
+      updateTermEmpty();
       if (sess) showPendingForHost(sess.host);
     }
 
     function closeSession(sid) {
       const i = sessions.findIndex(s => s.sid === sid); if (i < 0) return;
       const sess = sessions[i];
+      const wasActive = activeSid === sid;
       try { window.api.termClose(sid); } catch {}
       try { sess.term.dispose(); } catch {}
       sess.container.remove();
       sessions.splice(i, 1);
+      if (wasActive) {
+        activeSid = null;
+        // Stay on the selected server — only auto-show another terminal if it's for the SAME host.
+        const same = sessions.find(s => s.host === currentHost);
+        if (same) activateSession(same.sid); else renderTabs();
+      } else {
+        renderTabs();
+      }
       updateTermEmpty();
-      if (activeSid === sid) { activeSid = null; if (sessions.length) activateSession(sessions[Math.max(0, i - 1)].sid); else renderTabs(); }
-      else renderTabs();
       updateConnectBtn();
       renderServerList();
     }
