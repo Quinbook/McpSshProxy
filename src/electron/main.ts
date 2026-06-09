@@ -663,6 +663,22 @@ app.whenReady().then(() => {
   startWebSocketServer();
 });
 
+// Gracefully tear down every SSH connection on normal shutdown (window close / quit),
+// so the remote sshd gets a proper disconnect instead of just a dropped socket.
+// (On a hard kill this handler can't run; the OS closing the sockets still ends the
+// remote sessions, just without a graceful SSH disconnect.)
+function closeAllSshConnections() {
+  for (const [, t] of termSessions) { try { t.stream.end(); } catch { /* ignore */ } try { t.conn.end(); } catch { /* ignore */ } }
+  termSessions.clear();
+  for (const [, conn] of runningConns) { try { conn.end(); } catch { /* ignore */ } }
+  runningConns.clear();
+}
+
+app.on('before-quit', closeAllSshConnections);
+process.on('exit', closeAllSshConnections);
+process.on('SIGTERM', () => { closeAllSshConnections(); app.quit(); });
+process.on('SIGINT', () => { closeAllSshConnections(); app.quit(); });
+
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
