@@ -155,15 +155,10 @@
           <button onclick="toggleTerminal()" id="term-connect-btn" class="text-xs px-3 py-1 bg-emerald-700 hover:bg-emerald-600 rounded">Terminal verbinden</button>
           <div id="pending-chips" class="flex items-center gap-1 flex-wrap ml-auto"></div>
         </div>
-        <!-- Detail / approval (open request) -->
-        <div id="detail-panel" class="flex flex-col overflow-hidden border-b border-gray-700" style="height:42%;">
-          <div id="detail-empty" class="flex-1 flex items-center justify-center text-gray-600 text-sm text-center px-4">
-            <div>
-              <div class="text-3xl mb-1">›_</div>
-              <div id="detail-hint">Befehle von Claude erscheinen hier zur Freigabe.<br/>Wähle links einen Server und verbinde das Terminal.</div>
-            </div>
-          </div>
-          <div id="detail-body" class="hidden flex-1 flex flex-col overflow-hidden">
+        <!-- Detail / approval (open request) — sized to content, hidden when nothing is selected -->
+        <div id="detail-panel" class="flex flex-col border-b border-gray-700" style="flex-shrink:0; max-height:55%; overflow:auto; display:none;">
+          <div id="detail-empty" class="hidden"></div>
+          <div id="detail-body" class="hidden flex flex-col">
             <div class="px-4 py-2 bg-gray-800 border-b border-gray-700 flex items-center gap-3">
               <span id="detail-host" class="text-sm font-semibold text-emerald-300 mono"></span>
               <span id="detail-badge"></span>
@@ -179,10 +174,9 @@
               <button id="cancel-btn" onclick="cancelCurrent()" class="hidden px-4 py-1.5 bg-orange-600 hover:bg-orange-500 rounded text-sm font-medium">Cancel</button>
               <span id="detail-status" class="text-sm text-gray-400 self-center ml-2"></span>
             </div>
-            <pre id="detail-output" class="flex-1 overflow-auto px-4 py-2 text-xs mono whitespace-pre-wrap text-gray-200 bg-gray-900"></pre>
+            <pre id="detail-output" class="overflow-auto px-4 py-2 text-xs mono whitespace-pre-wrap text-gray-200 bg-gray-900" style="max-height:30vh;"></pre>
           </div>
         </div>
-        <div class="vsplit" id="vsplit-handle"></div>
         <!-- Terminals (multi-session tabs) -->
         <div class="flex-1 flex flex-col overflow-hidden bg-black">
           <div id="term-tabs" class="flex items-stretch bg-gray-800 border-b border-gray-700 text-xs overflow-x-auto" style="min-height:28px;"></div>
@@ -573,8 +567,8 @@
       document.getElementById('detail-output').textContent = text || '(no output)';
     }
 
-    function showDetail() { document.getElementById('detail-empty').classList.add('hidden'); document.getElementById('detail-body').classList.remove('hidden'); }
-    function hideDetail() { document.getElementById('detail-empty').classList.remove('hidden'); document.getElementById('detail-body').classList.add('hidden'); selected = null; updateDangerMode(); }
+    function showDetail() { document.getElementById('detail-panel').style.display = ''; document.getElementById('detail-body').classList.remove('hidden'); setTimeout(fitTerm, 0); }
+    function hideDetail() { document.getElementById('detail-panel').style.display = 'none'; document.getElementById('detail-body').classList.add('hidden'); selected = null; updateDangerMode(); setTimeout(fitTerm, 0); }
 
     // ---------- Terminals (multiple concurrent xterm + ssh2 shell sessions, tabbed) ----------
     let sessions = [];   // { sid, host, term, fit, container, connected }
@@ -773,7 +767,6 @@
     updateTermEmpty();
     window.addEventListener('resize', fitTerm);
     initResizeH('cmd-resize-handle', 'cmd-sidebar');
-    initResizeV();
     initLeftVSplit();
     generateAppIcon();
     loadMode();
