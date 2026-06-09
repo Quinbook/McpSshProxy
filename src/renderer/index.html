@@ -373,7 +373,7 @@
           <span class="${sess ? 'text-emerald-400' : 'text-gray-600'}" title="${sess ? 'verbunden' : 'getrennt'}">${sess ? '●' : '○'}</span>
           <div class="min-w-0"><div class="font-semibold text-emerald-300 truncate">${escapeHtml(s.name)}</div>
           <div class="text-gray-500 mono truncate" style="font-size:10px;">${escapeHtml(s.user)}@${escapeHtml(s.host)}</div></div>
-          ${pendCount ? `<span class="ml-auto flex items-center justify-center w-5 h-5 rounded-full bg-amber-500 text-black font-bold text-xs animate-pulse" title="${pendCount} offene Anfrage(n)">!</span>` : ''}
+          ${pendCount ? `<span class="ml-auto flex items-center justify-center w-5 h-5 rounded-full bg-amber-500 text-black font-bold text-xs animate-pulse" title="${pendCount} offene Anfrage(n)">${pendCount > 1 ? pendCount : '!'}</span>` : ''}
         </div>`;
       }).join('');
     }
@@ -388,6 +388,8 @@
     // ---------- Pending commands ----------
     window.api.onNewCommand((cmd) => {
       pending.push(cmd);
+      // Auto-connect a terminal for the target server if none exists (in the background unless it's current).
+      if (!sessions.find(s => s.host === cmd.host)) openTerminalSession(cmd.host, cmd.host === currentHost);
       renderPending(); renderServerList(); markActivity(cmd.host);
       // Only reveal the request if you're already viewing that server; otherwise just flag it (! + toast).
       if (cmd.host === currentHost) selectPending(cmd.id);
@@ -464,6 +466,9 @@
       setButtons({ run: false, reject: false, send: false, cancel: false });
       document.getElementById('detail-badge').innerHTML = '<span class="px-2 py-0.5 rounded-full text-xs bg-gray-600">done</span>';
       renderPending(); renderServerList();
+      // If more requests are queued for this server, advance to the next one.
+      const next = pending.find(p => p.host === currentHost);
+      if (next) selectPending(next.id);
     }
     async function cancelCurrent() {
       if (!selected) return;
@@ -497,7 +502,10 @@
     }
 
     // ---------- Auto-run (auto-list mode) ----------
-    window.api.onCommandAutostart((d) => { markActivity(d.host); });
+    window.api.onCommandAutostart((d) => {
+      if (!sessions.find(s => s.host === d.host)) openTerminalSession(d.host, d.host === currentHost);
+      markActivity(d.host);
+    });
     window.api.onCommandAutodone((d) => {
       persistHistory({ host: d.host, command: d.command, status: 'auto', exitCode: d.result.code, signal: d.result.signal, stdout: d.result.stdout, stderr: d.result.stderr });
       echoClaudeCommand(d.host, d.command, d.result);
@@ -573,10 +581,14 @@
       document.getElementById('term-empty').style.display = hasActive ? 'none' : 'flex';
     }
 
-    async function connectTerminal() {
-      if (!currentHost) { showToast('Terminal', 'Kein Server gewählt'); return; }
-      const existing = sessions.find(s => s.host === currentHost);
-      if (existing) { activateSession(existing.sid); return; }   // already connected → just switch to it
+    function connectTerminal() { return openTerminalSession(currentHost, true); }
+
+    // Open a shell session for `host`. activate=false connects in the background (a new tab)
+    // without stealing the current view — used to auto-connect when Claude targets an idle server.
+    async function openTerminalSession(host, activate) {
+      if (!host) { if (activate) showToast('Terminal', 'Kein Server gewählt'); return null; }
+      const existing = sessions.find(s => s.host === host);
+      if (existing) { if (activate) activateSession(existing.sid); return existing; }
 
       const sid = 'term_' + Date.now() + '_' + Math.floor(Math.random() * 100000);
       const container = document.createElement('div');
@@ -590,17 +602,17 @@
       term.open(container);
       term.onData(d => window.api.termInput(sid, d));
 
-      const sess = { sid, host: currentHost, term, fit, container, connected: false, unread: false };
+      const sess = { sid, host, term, fit, container, connected: false, unread: false };
       sessions.push(sess);
-      updateTermEmpty();
-      activateSession(sid);
-      term.writeln('\x1b[2mVerbinde mit ' + currentHost + '…\x1b[0m');
+      renderTabs(); renderServerList(); updateTermEmpty();
+      if (activate) activateSession(sid);
+      term.writeln('\x1b[2mVerbinde mit ' + host + '…\x1b[0m');
 
-      const res = await window.api.termOpen(sid, currentHost, term.cols || 80, term.rows || 24);
-      if (res.success) { sess.connected = true; renderTabs(); term.focus(); }
-      else { term.writeln('\x1b[31mConnect failed: ' + res.error + '\x1b[0m'); renderTabs(); }
-      updateConnectBtn();
-      renderServerList();
+      const res = await window.api.termOpen(sid, host, term.cols || 80, term.rows || 24);
+      if (res.success) { sess.connected = true; if (activate) term.focus(); }
+      else { term.writeln('\x1b[31mConnect failed: ' + res.error + '\x1b[0m'); }
+      renderTabs(); updateConnectBtn(); renderServerList();
+      return sess;
     }
 
     function activateSession(sid) {
@@ -667,7 +679,7 @@
     // Render a Claude-run command as a clean labelled block, then nudge a fresh shell prompt
     // (the command runs on a separate SSH channel, so it isn't typed at your live prompt).
     function echoClaudeCommand(host, command, result) {
-      const s = sessions.find(x => x.host === host && x.connected);
+      const s = sessions.find(x => x.host === host);   // write even if the SSH shell is still connecting
       if (!s) return;
       const out = (result && result.stdout) || '';
       const err = (result && result.stderr) || '';
@@ -679,7 +691,7 @@
       if (result && typeof result.code === 'number') block += '\x1b[2m└ exit ' + result.code + '\x1b[0m';
       s.term.write(block);
       if (s.sid !== activeSid) { s.unread = true; renderTabs(); }
-      window.api.termInput(s.sid, '\r'); // draw a fresh prompt below the block
+      if (s.connected) window.api.termInput(s.sid, '\r'); // draw a fresh prompt below the block
     }
 
     function toggleTerminal() {
