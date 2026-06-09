@@ -369,10 +369,12 @@
       el.innerHTML = servers.map(s => {
         const sess = sessions.find(x => x.host === s.name && x.connected);
         const active = s.name === currentHost;
+        const pendCount = pending.filter(p => p.host === s.name).length;
         return `<div onclick="selectHost('${escapeHtml(s.name)}')" class="p-2 rounded cursor-pointer flex items-center gap-2 ${active ? 'bg-gray-700 border border-blue-500' : 'hover:bg-gray-700'}">
           <span class="${sess ? 'text-emerald-400' : 'text-gray-600'}" title="${sess ? 'verbunden' : 'getrennt'}">${sess ? '●' : '○'}</span>
           <div class="min-w-0"><div class="font-semibold text-emerald-300 truncate">${escapeHtml(s.name)}</div>
           <div class="text-gray-500 mono truncate" style="font-size:10px;">${escapeHtml(s.user)}@${escapeHtml(s.host)}</div></div>
+          ${pendCount ? `<span class="ml-auto flex items-center justify-center w-5 h-5 rounded-full bg-amber-500 text-black font-bold text-xs animate-pulse" title="${pendCount} offene Anfrage(n)">!</span>` : ''}
         </div>`;
       }).join('');
     }
@@ -380,22 +382,28 @@
       currentHost = name;
       document.getElementById('tb-host').textContent = name || '—';
       const sess = sessions.find(s => s.host === name);
-      if (sess) { activateSession(sess.sid); return; }   // activateSession refreshes list + button
-      renderServerList(); updateConnectBtn();
+      if (sess) { activateSession(sess.sid); return; }   // activateSession refreshes list + button + pending
+      renderServerList(); updateConnectBtn(); showPendingForHost(name);
     }
 
     // ---------- Pending commands ----------
     window.api.onNewCommand((cmd) => {
-      pending.push(cmd); renderPending();
-      markActivity(cmd.host);
-      if (!selected) selectPending(cmd.id);
-      showToast('Neuer Befehl', `${cmd.host}: wartet auf Freigabe`);
+      pending.push(cmd);
+      renderPending(); renderServerList(); markActivity(cmd.host);
+      // Only reveal the request if you're already viewing that server; otherwise just flag it (! + toast).
+      if (cmd.host === currentHost) selectPending(cmd.id);
+      showToast('Neuer Befehl', `${cmd.host}: wartet auf Freigabe — links mit ! markiert`);
     });
+    // Show the open request for a host (when you switch to it), or clear the panel if none.
+    function showPendingForHost(host) {
+      const p = pending.find(x => x.host === host);
+      if (p) selectPending(p.id); else hideDetail();
+    }
     function renderPending() {
       const el = document.getElementById('pending-chips');
       if (!el) return;
       el.innerHTML = pending.map(c => `
-        <button onclick="selectPending('${c.id}')" title="${escapeHtml(c.command)}"
+        <button onclick="selectHost('${escapeHtml(c.host)}')" title="${escapeHtml(c.command)}"
           class="text-xs px-2 py-0.5 rounded bg-amber-600 hover:bg-amber-500 ${selected?.kind==='pending'&&selected.item.id===c.id?'ring-2 ring-white':''}">⚠ ${escapeHtml(c.host)}</button>
       `).join('');
     }
@@ -456,7 +464,7 @@
       pending = pending.filter(c => c.id !== id);
       setButtons({ run: false, reject: false, send: false, cancel: false });
       document.getElementById('detail-badge').innerHTML = '<span class="px-2 py-0.5 rounded-full text-xs bg-gray-600">done</span>';
-      renderPending();
+      renderPending(); renderServerList();
     }
     async function cancelCurrent() {
       if (!selected) return;
@@ -485,8 +493,8 @@
     function removePending(id) {
       pending = pending.filter(c => c.id !== id);
       selected = null; lastResult = null;
-      renderPending();
-      if (pending.length) selectPending(pending[0].id); else hideDetail();
+      renderPending(); renderServerList();
+      showPendingForHost(currentHost);   // only show the current server's request (if any)
     }
 
     // ---------- Auto-run (auto-list mode) ----------
@@ -606,6 +614,7 @@
       renderTabs();
       renderServerList();
       updateConnectBtn();
+      if (sess) showPendingForHost(sess.host);
     }
 
     function closeSession(sid) {
