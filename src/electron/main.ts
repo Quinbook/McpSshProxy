@@ -7,7 +7,9 @@ import { WebSocketServer, WebSocket } from 'ws';
 import * as http from 'http';
 import Store from 'electron-store';
 import { Client as SshClient, ConnectConfig } from 'ssh2';
-import { parseFromFile as parsePpkFile } from 'ppk-to-openssh';
+// sshpk has no bundled types; require keeps it as `any` (only parsePrivateKey is used).
+// It parses PuTTY .ppk (v2 + v3) directly and re-exports a key ssh2 accepts.
+const sshpk = require('sshpk');
 
 interface ServerConfig {
   id: string;
@@ -152,8 +154,10 @@ async function buildConnectConfig(server: ServerConfig): Promise<ConnectConfig> 
     const passphrase = decryptSecret(server.passphraseEnc);
     if (isPuttyKey(raw)) {
       try {
-        const { privateKey } = await parsePpkFile(server.keyPath, passphrase || undefined);
-        cfg.privateKey = privateKey; // converted key is unencrypted OpenSSH PEM
+        const key = passphrase
+          ? sshpk.parsePrivateKey(raw, 'putty', { passphrase })
+          : sshpk.parsePrivateKey(raw, 'putty');
+        cfg.privateKey = key.toString('openssh'); // re-export in a format ssh2 accepts
       } catch (e: any) {
         throw new Error(`Could not read PuTTY key (.ppk): ${e.message}`);
       }
